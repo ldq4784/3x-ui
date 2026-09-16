@@ -104,6 +104,33 @@ func migrateOutboundSubscriptionUserAgentColumn() error {
 	return migrator.AddColumn(&model.OutboundSubscription{}, "UserAgent")
 }
 
+func ensureModelColumns(mdl any) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(mdl) {
+		return nil
+	}
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(mdl); err != nil || stmt.Schema == nil {
+		return nil
+	}
+	for _, field := range stmt.Schema.Fields {
+		if field.DBName == "" || field.IgnoreMigration {
+			continue
+		}
+		if !migrator.HasColumn(mdl, field.DBName) {
+			if err := migrator.AddColumn(mdl, field.Name); err != nil {
+				if !isIgnorableDuplicateColumnErr(db, err, mdl) {
+					log.Printf("AddColumn %s for %T failed: %v", field.DBName, mdl, err)
+					return err
+				}
+			} else {
+				log.Printf("Added missing column %s for %T", field.DBName, mdl)
+			}
+		}
+	}
+	return nil
+}
+
 func initModels() error {
 	if err := migrateClientTrafficLastSubFetchColumn(); err != nil {
 		return err
@@ -113,12 +140,15 @@ func initModels() error {
 	}
 	models := allModels()
 	for _, mdl := range models {
+		if err := ensureModelColumns(mdl); err != nil {
+			return err
+		}
 		if IsPostgres() && postgresModelSettled(mdl) {
 			continue
 		}
 		if err := db.AutoMigrate(mdl); err != nil {
 			if isIgnorableDuplicateColumnErr(db, err, mdl) {
-				log.Printf("Ignoring duplicate column during auto migration for %T: %v", mdl, err)
+				log.Printf("Ignoring existing schema element during auto migration for %T: %v", mdl, err)
 				continue
 			}
 			log.Printf("Error auto migrating model: %v", err)
@@ -349,6 +379,26 @@ func migrateClientTrafficResetColumns() error {
 	}
 	if db.Migrator().HasColumn(&model.ClientRecord{}, "traffic_reset_day") {
 		if err := db.Exec("UPDATE clients SET traffic_reset_day = 1 WHERE traffic_reset_day IS NULL").Error; err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasColumn(&xray.ClientTraffic{}, "reset_day") {
+		if err := db.Exec("UPDATE client_traffics SET reset_day = 0 WHERE reset_day IS NULL").Error; err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasColumn(&xray.ClientTraffic{}, "reset_max") {
+		if err := db.Exec("UPDATE client_traffics SET reset_max = 0 WHERE reset_max IS NULL").Error; err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasColumn(&xray.ClientTraffic{}, "reset_count") {
+		if err := db.Exec("UPDATE client_traffics SET reset_count = 0 WHERE reset_count IS NULL").Error; err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasColumn(&model.NodeClientTraffic{}, "reset_day") {
+		if err := db.Exec("UPDATE node_client_traffics SET reset_day = 0 WHERE reset_day IS NULL").Error; err != nil {
 			return err
 		}
 	}
@@ -1196,13 +1246,21 @@ func isIgnorableDuplicateColumnErr(gdb *gorm.DB, err error, mdl any) bool {
 		col = strings.Trim(col, "`\"[]")
 		return col != "" && gdb != nil && gdb.Migrator().HasColumn(mdl, col)
 	}
-	if strings.Contains(errMsg, "already exists") && strings.Contains(errMsg, "column ") {
-		if _, after, ok := strings.Cut(errMsg, "column \""); ok {
-			rest := after
-			if e := strings.Index(rest, "\""); e > 0 {
-				col := rest[:e]
-				return col != "" && gdb != nil && gdb.Migrator().HasColumn(mdl, col)
+	if strings.Contains(errMsg, "42p07") || strings.Contains(errMsg, "42710") || strings.Contains(errMsg, "42701") {
+		return true
+	}
+	if strings.Contains(errMsg, "already exists") {
+		if strings.Contains(errMsg, "column ") {
+			if _, after, ok := strings.Cut(errMsg, "column \""); ok {
+				rest := after
+				if e := strings.Index(rest, "\""); e > 0 {
+					col := rest[:e]
+					return col != "" && gdb != nil && gdb.Migrator().HasColumn(mdl, col)
+				}
 			}
+		}
+		if strings.Contains(errMsg, "relation ") || strings.Contains(errMsg, "constraint ") || strings.Contains(errMsg, "index ") || strings.Contains(errMsg, "table ") {
+			return true
 		}
 	}
 	return false
