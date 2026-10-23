@@ -603,7 +603,7 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 
 	diskIOStats, err := disk.IOCounters()
 	if err != nil {
-		logger.Warning("get disk io counters failed:", err)
+		logger.Debug("get disk io counters failed:", err)
 	} else {
 		var totalRead, totalWrite uint64
 		for _, counter := range diskIOStats {
@@ -1093,12 +1093,7 @@ func (s *ServerService) UpdateXray(version string) error {
 		return fmt.Errorf("xray version %q is not in the fetched release list", version)
 	}
 
-	// 1. Stop xray before doing anything
-	if err := s.StopXrayService(); err != nil {
-		logger.Warning("failed to stop xray before update:", err)
-	}
-
-	// 2. Download the zip
+	// 1. Download the zip and verify checksum first (keeps proxy alive and avoids stopping if download fails)
 	zipFileName, err := s.downloadXRay(version)
 	if err != nil {
 		return err
@@ -1118,6 +1113,11 @@ func (s *ServerService) UpdateXray(version string) error {
 	reader, err := zip.NewReader(zipFile, stat.Size())
 	if err != nil {
 		return err
+	}
+
+	// 2. Stop xray before replacing binary
+	if err := s.StopXrayService(); err != nil {
+		logger.Warning("failed to stop xray before update:", err)
 	}
 
 	// 3. Helper to extract files
@@ -1166,11 +1166,14 @@ func (s *ServerService) UpdateXray(version string) error {
 	}
 
 	// 4. Extract correct binary
+	targetBinary := xray.GetBinaryPath()
 	if runtime.GOOS == "windows" {
-		targetBinary := filepath.Join(config.GetBinFolderPath(), "xray-windows-amd64.exe")
+		if !strings.HasSuffix(strings.ToLower(targetBinary), ".exe") {
+			targetBinary += ".exe"
+		}
 		err = copyZipFile("xray.exe", targetBinary)
 	} else {
-		err = copyZipFile("xray", xray.GetBinaryPath())
+		err = copyZipFile("xray", targetBinary)
 	}
 	if err != nil {
 		return err
