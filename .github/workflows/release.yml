@@ -2,22 +2,13 @@ name: Release 3X-UI
 
 on:
   workflow_dispatch:
+  # Only main (dev channel) and version tags ship binaries; build any other
+  # branch on demand via workflow_dispatch.
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "v*.*.*"
-    paths:
-      - "**.go"
-      - "go.mod"
-      - "go.sum"
-      - "**.sh"
-      - "frontend/**"
-      - "x-ui.service.debian"
-      - "x-ui.service.arch"
-      - "x-ui.service.rhel"
-      - ".github/workflows/release.yml"
-  pull_request:
     paths:
       - "**.go"
       - "go.mod"
@@ -124,7 +115,9 @@ jobs:
           cd x-ui/bin
 
           # Download dependencies
-          Xray_URL="https://github.com/XTLS/Xray-core/releases/download/v26.9.9/"
+          XRAY_VER=$(curl -sf $CURL_RETRY -o /dev/null -w '%{redirect_url}' "https://github.com/XTLS/Xray-core/releases/latest" | sed -n 's#.*/releases/tag/##p')
+          XRAY_VER=${XRAY_VER:-v26.10.21}
+          Xray_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/"
           if [ "${{ matrix.platform }}" == "amd64" ]; then
             fetch ${Xray_URL}Xray-linux-64.zip
             unzip Xray-linux-64.zip
@@ -180,28 +173,6 @@ jobs:
               rm -rf "${MTG_PKG}" "${MTG_PKG}.tar.gz"
               ;;
           esac
-          case "${{ matrix.platform }}" in
-            amd64)
-              curl -sfLRO $CURL_RETRY "https://github.com/EAimTY/tuic/releases/download/tuic-server-1.0.0/tuic-server-1.0.0-x86_64-unknown-linux-musl"
-              mv "tuic-server-1.0.0-x86_64-unknown-linux-musl" "tuic-server"
-              chmod +x "tuic-server"
-              ;;
-            arm64)
-              curl -sfLRO $CURL_RETRY "https://github.com/EAimTY/tuic/releases/download/tuic-server-1.0.0/tuic-server-1.0.0-aarch64-unknown-linux-musl"
-              mv "tuic-server-1.0.0-aarch64-unknown-linux-musl" "tuic-server"
-              chmod +x "tuic-server"
-              ;;
-            armv7)
-              curl -sfLRO $CURL_RETRY "https://github.com/EAimTY/tuic/releases/download/tuic-server-1.0.0/tuic-server-1.0.0-armv7-unknown-linux-musleabihf"
-              mv "tuic-server-1.0.0-armv7-unknown-linux-musleabihf" "tuic-server"
-              chmod +x "tuic-server"
-              ;;
-            386)
-              curl -sfLRO $CURL_RETRY "https://github.com/EAimTY/tuic/releases/download/tuic-server-1.0.0/tuic-server-1.0.0-i686-unknown-linux-musl"
-              mv "tuic-server-1.0.0-i686-unknown-linux-musl" "tuic-server"
-              chmod +x "tuic-server"
-              ;;
-          esac
           cd ../..
 
       - name: Package
@@ -232,13 +203,15 @@ jobs:
   #  Windows Build
   # =================================
   build-windows:
-    name: Build for Windows
+    name: Build for Windows (${{ matrix.platform }})
     permissions:
       contents: write
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - amd64
+          - arm64
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -267,36 +240,50 @@ jobs:
           npm run build
         working-directory: frontend
 
-      - name: Install MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            git
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-sqlite3
-            mingw-w64-x86_64-pkg-config
+      - name: Install LLVM-MinGW Toolchain
+        shell: pwsh
+        run: |
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-ucrt-x86_64.zip"
+          Write-Host "Downloading LLVM-MinGW..."
+          curl.exe -fL -sS --retry 5 --retry-all-errors --retry-delay 3 -o llvm-mingw.zip $url
+          Write-Host "Extracting LLVM-MinGW..."
+          if (Get-Command 7z -ErrorAction SilentlyContinue) {
+            7z x llvm-mingw.zip -oC:\ | Out-Null
+          } else {
+            Expand-Archive -Path llvm-mingw.zip -DestinationPath C:\
+          }
+          $llvmDir = (Get-ChildItem -Path C:\ -Directory -Filter "llvm-mingw-*" | Select-Object -First 1).FullName
+          Move-Item -Path $llvmDir -Destination "C:\llvm-mingw"
+          Remove-Item llvm-mingw.zip
+          "C:\llvm-mingw\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Build 3X-UI for Windows (CGO)
-        shell: msys2 {0}
+        shell: pwsh
         run: |
-          export PATH="/c/hostedtoolcache/windows/go/$(ls /c/hostedtoolcache/windows/go | sort -V | tail -n1)/x64/bin:$PATH"
+          $env:CGO_ENABLED = "1"
+          $env:GOOS = "windows"
+          $env:GOARCH = "${{ matrix.platform }}"
+          if ("${{ matrix.platform }}" -eq "arm64") {
+            $env:CC = "aarch64-w64-mingw32-gcc"
+          } else {
+            $env:CC = "x86_64-w64-mingw32-gcc"
+          }
 
-          export CGO_ENABLED=1
-          export GOOS=windows
-          export GOARCH=amd64
-          export CC=x86_64-w64-mingw32-gcc
-
-          which go
           go version
-          gcc --version
+          & $env:CC --version
+
+          # Version info + manifest resource: a bare stripped Go exe scores high on AV heuristics.
+          $PANEL_VERSION = (Get-Content internal/config/version).Trim()
+          go run github.com/tc-hib/go-winres@v0.3.3 make --arch ${{ matrix.platform }} `
+            --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
 
           # Stamp the commit into per-commit (dev channel) builds only.
-          LDFLAGS="-w -s"
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            LDFLAGS="$LDFLAGS -X github.com/mhsanaei/3x-ui/v3/internal/config.buildCommit=${GITHUB_SHA:0:8} -X github.com/mhsanaei/3x-ui/v3/internal/config.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          fi
+          $LDFLAGS = "-w -s"
+          if ("${{ github.ref }}" -notlike "refs/tags/*") {
+            $commit = "${{ github.sha }}".Substring(0, 8)
+            $date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            $LDFLAGS += " -X github.com/mhsanaei/3x-ui/v3/internal/config.buildCommit=$commit -X github.com/mhsanaei/3x-ui/v3/internal/config.buildDate=$date"
+          }
           go build -buildvcs=true -ldflags "$LDFLAGS" -o xui-release.exe -v .
 
       - name: Copy and download resources
@@ -304,15 +291,22 @@ jobs:
         run: |
           $retry = @{ MaximumRetryCount = 5; RetryIntervalSec = 10 }
           mkdir x-ui
-          Copy-Item xui-release.exe x-ui\x-ui.exe
+          Copy-Item xui-release.exe x-ui\3x-ui.exe
           mkdir x-ui\bin
           cd x-ui\bin
 
           # Download Xray for Windows
-          $Xray_URL = "https://github.com/XTLS/Xray-core/releases/download/v26.9.9/"
-          Invoke-WebRequest @retry -Uri "${Xray_URL}Xray-windows-64.zip" -OutFile "Xray-windows-64.zip"
-          Expand-Archive -Path "Xray-windows-64.zip" -DestinationPath .
-          Remove-Item "Xray-windows-64.zip"
+          $XRAY_VER = (curl.exe -sf --retry 5 --retry-all-errors --retry-delay 3 -o NUL -w '%{redirect_url}' "https://github.com/XTLS/Xray-core/releases/latest") -replace '^.*/releases/tag/', ''
+          if (-not $XRAY_VER -or $XRAY_VER -notmatch '^v[\d.]+$') { $XRAY_VER = 'v26.10.21' }
+          $Xray_URL = "https://github.com/XTLS/Xray-core/releases/download/$XRAY_VER/"
+
+          if ('${{ matrix.platform }}' -eq 'arm64') {
+            Invoke-WebRequest @retry -Uri "${Xray_URL}Xray-windows-arm64-v8a.zip" -OutFile "Xray-windows.zip"
+          } else {
+            Invoke-WebRequest @retry -Uri "${Xray_URL}Xray-windows-64.zip" -OutFile "Xray-windows.zip"
+          }
+          Expand-Archive -Path "Xray-windows.zip" -DestinationPath .
+          Remove-Item "Xray-windows.zip"
           Remove-Item geoip.dat, geosite.dat -ErrorAction SilentlyContinue
           Invoke-WebRequest @retry -Uri "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -OutFile "geoip.dat"
           Invoke-WebRequest @retry -Uri "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -OutFile "geosite.dat"
@@ -320,22 +314,17 @@ jobs:
           Invoke-WebRequest @retry -Uri "https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat" -OutFile "geosite_IR.dat"
           Invoke-WebRequest @retry -Uri "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat" -OutFile "geoip_RU.dat"
           Invoke-WebRequest @retry -Uri "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat" -OutFile "geosite_RU.dat"
-          Rename-Item xray.exe xray-windows-amd64.exe
+          Rename-Item xray.exe "xray-windows-${{ matrix.platform }}.exe"
 
           # mtg-multi (MTProto sidecar) publishes a prebuilt Windows binary, so
-          # download and unpack it instead of compiling. The tag comes from the
-          # release-page redirect on github.com — not api.github.com, whose
-          # outages have failed release runs while asset downloads kept working.
+          # download and unpack it instead of compiling.
           $MTG_MULTI_VER = (curl.exe -sf --retry 5 --retry-all-errors --retry-delay 3 -o NUL -w '%{redirect_url}' "https://github.com/mhsanaei/mtg-multi/releases/latest") -replace '^.*/releases/tag/', ''
           if (-not $MTG_MULTI_VER -or $MTG_MULTI_VER -notmatch '^v[\d.]+$') { throw "could not resolve the latest mtg-multi release tag" }
-          $MTG_PKG = "mtg-multi-$($MTG_MULTI_VER.TrimStart('v'))-windows-amd64"
+          $MTG_PKG = "mtg-multi-$($MTG_MULTI_VER.TrimStart('v'))-windows-${{ matrix.platform }}"
           curl.exe -sfLRO --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/mhsanaei/mtg-multi/releases/download/$MTG_MULTI_VER/$MTG_PKG.zip"
           Expand-Archive -Path "$MTG_PKG.zip" -DestinationPath "mtg-tmp" -Force
-          Move-Item "mtg-tmp/$MTG_PKG/mtg-multi.exe" "mtg-windows-amd64.exe"
+          Move-Item "mtg-tmp/$MTG_PKG/mtg-multi.exe" "mtg-windows-${{ matrix.platform }}.exe"
           Remove-Item -Recurse -Force "mtg-tmp", "$MTG_PKG.zip"
-
-          # TUIC sidecar for Windows
-          curl.exe -sfLRo "tuic-server-windows-amd64.exe" --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/EAimTY/tuic/releases/download/tuic-server-1.0.0/tuic-server-1.0.0-x86_64-pc-windows-msvc.exe"
 
           cd ..
           Copy-Item -Path ..\windows_files\* -Destination . -Recurse
@@ -344,17 +333,17 @@ jobs:
       - name: Package to Zip
         shell: pwsh
         run: |
-          Compress-Archive -Path .\x-ui -DestinationPath "x-ui-windows-amd64.zip"
-          $hash = (Get-FileHash x-ui-windows-amd64.zip -Algorithm SHA256).Hash.ToLower()
-          [IO.File]::WriteAllText("$PWD\x-ui-windows-amd64.zip.sha256", "$hash  x-ui-windows-amd64.zip`n")
+          Compress-Archive -Path .\x-ui -DestinationPath "x-ui-windows-${{ matrix.platform }}.zip"
+          $hash = (Get-FileHash "x-ui-windows-${{ matrix.platform }}.zip" -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$PWD\x-ui-windows-${{ matrix.platform }}.zip.sha256", "$hash  x-ui-windows-${{ matrix.platform }}.zip`n")
 
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: x-ui-windows-amd64
+          name: x-ui-windows-${{ matrix.platform }}
           path: |
-            ./x-ui-windows-amd64.zip
-            ./x-ui-windows-amd64.zip.sha256
+            ./x-ui-windows-${{ matrix.platform }}.zip
+            ./x-ui-windows-${{ matrix.platform }}.zip.sha256
 
       - name: Upload files to GH release
         uses: svenstaro/upload-release-action@v2
@@ -362,7 +351,7 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref_name }}
-          file: x-ui-windows-amd64.zip*
+          file: x-ui-windows-${{ matrix.platform }}.zip*
           file_glob: true
           overwrite: true
           prerelease: true

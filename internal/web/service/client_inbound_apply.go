@@ -19,6 +19,16 @@ import (
 	"gorm.io/gorm"
 )
 
+// droppedClientNeedsRestart is what restartXrayOnClientDisable asks for: the core
+// API drops the credential only, so a live session needs the process replaced.
+func droppedClientNeedsRestart() bool {
+	on, err := (&SettingService{}).GetRestartXrayOnClientDisable()
+	if err != nil {
+		logger.Warning("get RestartXrayOnClientDisable failed:", err)
+	}
+	return on
+}
+
 func sameClientConfigExceptUpdatedAt(a, b map[string]any) bool {
 	aa := maps.Clone(a)
 	bb := maps.Clone(b)
@@ -29,16 +39,18 @@ func sameClientConfigExceptUpdatedAt(a, b map[string]any) bool {
 	return aerr == nil && berr == nil && string(an) == string(bn)
 }
 
-// advancePushedInbound advances the node's reconcile-skip fingerprint from the
-// pre-edit settings to the saved ones after every per-client push succeeded.
-func advancePushedInbound(rt runtime.Runtime, prevSettings string, ib *model.Inbound) {
+// advancePushedInbound advances the node's reconcile-skip fingerprint to what the
+// per-client pushes delivered, not the saved settings a traffic tick may have extended.
+func advancePushedInbound(rt runtime.Runtime, prevSettings, pushedSettings string, ib *model.Inbound) {
 	rem, ok := rt.(*runtime.Remote)
 	if !ok {
 		return
 	}
 	prev := *ib
 	prev.Settings = prevSettings
-	rem.AdvancePushedInbound(&prev, ib)
+	pushed := *ib
+	pushed.Settings = pushedSettings
+	rem.AdvancePushedInbound(&prev, &pushed)
 }
 
 // delInboundClients removes several clients from a single inbound in one pass:
@@ -124,7 +136,7 @@ func (s *ClientService) delInboundClients(inboundSvc *InboundService, inboundId 
 			}
 		}
 		var sharedErr error
-		sharedSet, sharedErr = inboundSvc.emailsUsedByOtherInbounds(removedEmails, inboundId)
+		sharedSet, sharedErr = inboundSvc.emailsUsedByOtherInbounds(db, removedEmails, inboundId)
 		if sharedErr != nil {
 			return false, sharedErr
 		}
@@ -174,7 +186,7 @@ func (s *ClientService) delInboundClients(inboundSvc *InboundService, inboundId 
 				}
 			}
 		}
-		if e := tx.Save(oldInbound).Error; e != nil {
+		if e := commitInboundClientSettings(tx, oldInbound, prevSettings); e != nil {
 			return e
 		}
 		detached := make([]string, 0, len(targets))
@@ -239,7 +251,7 @@ func (s *ClientService) delInboundClients(inboundSvc *InboundService, inboundId 
 		}
 	}
 	if nodePush && !nodePushFailed {
-		advancePushedInbound(nodeRt, prevSettings, oldInbound)
+		advancePushedInbound(nodeRt, prevSettings, string(newSettings), oldInbound)
 	}
 
 	return needRestart, nil
@@ -317,6 +329,9 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 
 	clients, err := inboundSvc.GetClients(data)
 	if err != nil {
+		return false, err
+	}
+	if err := validateClientsRenewal(clients); err != nil {
 		return false, err
 	}
 
@@ -418,7 +433,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 
 	var portCtx portConflictContext
 	if oldInbound.Protocol == model.AmneziaWG {
-		portCtx, err = inboundSvc.loadPortConflictContext(database.GetDB())
+		portCtx, err = inboundSvc.loadPortConflictContext(database.GetDB(), oldInbound.NodeID)
 		if err != nil {
 			return false, err
 		}
@@ -428,7 +443,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 			return false, common.NewError("client email is required")
 		}
 		switch oldInbound.Protocol {
-		case "trojan":
+		case "trojan", "masque":
 			if client.Password == "" {
 				return false, common.NewError("empty client ID")
 			}
@@ -526,13 +541,13 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 				crossAddrs = append(crossAddrs, addr)
 			}
 			for i := range clients {
-				if hit := wireguardAllowedIPsCollision(clients[i].AllowedIPs, crossAddrs); hit != "" {
-					return common.NewError("allowedIPs entry", hit, "is already used by a client on", crossUsed[hit])
+				if entry, taken := wireguardAllowedIPsOverlap(clients[i].AllowedIPs, crossAddrs); taken != "" {
+					return common.NewError("allowedIPs entry", entry, "overlaps", taken, "used by a client on", crossUsed[taken])
 				}
 			}
 		}
 		if oldInbound.Protocol == model.AmneziaWG {
-			txPortCtx, pErr := inboundSvc.loadPortConflictContext(tx)
+			txPortCtx, pErr := inboundSvc.loadPortConflictContext(tx, oldInbound.NodeID)
 			if pErr != nil {
 				return pErr
 			}
@@ -550,7 +565,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 				return e
 			}
 		}
-		if e := tx.Save(oldInbound).Error; e != nil {
+		if e := commitInboundClientSettings(tx, oldInbound, prevSettings); e != nil {
 			return e
 		}
 		if err := s.ApplyInboundClientDelta(tx, oldInbound.Id, addedClients, nil); err != nil {
@@ -600,6 +615,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 					"allowedIPs":   client.AllowedIPs,
 					"preSharedKey": client.PreSharedKey,
 					"keepAlive":    keepAliveStr(client.KeepAliveSeconds()),
+					"reverse":      client.Reverse,
 				})
 				if err1 == nil {
 					logger.Debug("Client added on", rt.Name(), ":", client.Email)
@@ -634,7 +650,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 			}
 		}
 		if push {
-			advancePushedInbound(rt, prevSettings, oldInbound)
+			advancePushedInbound(rt, prevSettings, string(newSettings), oldInbound)
 		}
 	}
 
@@ -646,6 +662,9 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 
 	clients, err := inboundSvc.GetClients(data)
 	if err != nil {
+		return false, err
+	}
+	if err := validateClientsRenewal(clients); err != nil {
 		return false, err
 	}
 
@@ -669,7 +688,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 
 	newClientId := ""
 	switch oldInbound.Protocol {
-	case "trojan":
+	case "trojan", "masque":
 		newClientId = clients[0].Password
 	case "shadowsocks":
 		newClientId = clients[0].Email
@@ -743,8 +762,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 					}
 					peers = append(peers, oldClients[i].AllowedIPs...)
 				}
-				if hit := wireguardAllowedIPsCollision(normalized, peers); hit != "" {
-					return false, common.NewError("wireguard: allowedIPs entry already used by another client:", hit)
+				if entry, taken := wireguardAllowedIPsOverlap(normalized, peers); taken != "" {
+					return false, common.NewError("wireguard: allowedIPs entry", entry, "overlaps", taken, "used by another client")
 				}
 				clients[0].AllowedIPs = normalized
 			}
@@ -765,7 +784,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 		}
 	}
 	if oldInbound.Protocol == model.AmneziaWG {
-		portCtx, err := inboundSvc.loadPortConflictContext(database.GetDB())
+		portCtx, err := inboundSvc.loadPortConflictContext(database.GetDB(), oldInbound.NodeID)
 		if err != nil {
 			return false, err
 		}
@@ -902,7 +921,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 		// Same re-check-inside-the-writer rule as AddInboundClient (#6225):
 		// the pre-tx pass can race a concurrent writer on another inbound.
 		if oldInbound.Protocol == model.AmneziaWG {
-			txPortCtx, pErr := inboundSvc.loadPortConflictContext(tx)
+			txPortCtx, pErr := inboundSvc.loadPortConflictContext(tx, oldInbound.NodeID)
 			if pErr != nil {
 				return pErr
 			}
@@ -927,7 +946,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 						return e
 					}
 				} else {
-					stillUsed, sErr := inboundSvc.emailUsedByOtherInbounds(oldEmail, data.Id)
+					stillUsed, sErr := inboundSvc.emailUsedByOtherInbounds(tx, oldEmail, data.Id)
 					if sErr != nil {
 						return sErr
 					}
@@ -949,7 +968,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 				}
 			}
 		} else {
-			stillUsed, sErr := inboundSvc.emailUsedByOtherInbounds(oldEmail, data.Id)
+			stillUsed, sErr := inboundSvc.emailUsedByOtherInbounds(tx, oldEmail, data.Id)
 			if sErr != nil {
 				return sErr
 			}
@@ -963,7 +982,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 			}
 		}
 
-		if e := tx.Save(oldInbound).Error; e != nil {
+		if e := commitInboundClientSettings(tx, oldInbound, prevSettings); e != nil {
 			return e
 		}
 		// Rename the client record in the same transaction as the settings JSON
@@ -1011,6 +1030,11 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 					err1 := rt.RemoveUser(context.Background(), oldInbound, oldEmail)
 					if err1 == nil {
 						logger.Debug("Old client deleted on", rt.Name(), ":", oldEmail)
+						// The API removal is enough only while the client is re-added; a
+						// dropped one ends its session only through a restart.
+						if !clients[0].Enable && droppedClientNeedsRestart() {
+							needRestart = true
+						}
 					} else if strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", oldEmail)) {
 						logger.Debug("User is already deleted. Nothing to do more...")
 					} else {
@@ -1035,6 +1059,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 						"allowedIPs":   clients[0].AllowedIPs,
 						"preSharedKey": clients[0].PreSharedKey,
 						"keepAlive":    keepAliveStr(clients[0].KeepAliveSeconds()),
+						"reverse":      clients[0].Reverse,
 					})
 					if err1 == nil {
 						logger.Debug("Client edited on", rt.Name(), ":", clients[0].Email)
@@ -1051,7 +1076,7 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 			if err1 != nil {
 				logger.Warning("Error in updating client on", rt.Name(), ":", err1)
 			} else {
-				advancePushedInbound(rt, prevSettings, oldInbound)
+				advancePushedInbound(rt, prevSettings, string(newSettings), oldInbound)
 			}
 		}
 	} else {
@@ -1115,7 +1140,7 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 	prevSettings := oldInbound.Settings
 	oldInbound.Settings = string(newSettings)
 
-	emailShared, err := inboundSvc.emailUsedByOtherInbounds(email, inboundId)
+	emailShared, err := inboundSvc.emailUsedByOtherInbounds(db, email, inboundId)
 	if err != nil {
 		return false, err
 	}
@@ -1161,7 +1186,7 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 				return e
 			}
 		}
-		if e := tx.Save(oldInbound).Error; e != nil {
+		if e := commitInboundClientSettings(tx, oldInbound, prevSettings); e != nil {
 			return e
 		}
 		if err := s.ApplyInboundClientDelta(tx, inboundId, nil, []string{email}); err != nil {
@@ -1199,7 +1224,7 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 					needRestart = true
 				} else if err1 := rt.RemoveUser(context.Background(), oldInbound, email); err1 == nil {
 					logger.Debug("Client deleted on", rt.Name(), ":", email)
-					needRestart = false
+					needRestart = droppedClientNeedsRestart()
 				} else if strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", email)) {
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
@@ -1225,7 +1250,7 @@ func (s *ClientService) DelInboundClientByEmail(inboundSvc *InboundService, inbo
 				if err1 != nil {
 					logger.Warning("Error in deleting client on", rt.Name(), ":", err1)
 				} else {
-					advancePushedInbound(rt, prevSettings, oldInbound)
+					advancePushedInbound(rt, prevSettings, string(newSettings), oldInbound)
 				}
 			}
 		}

@@ -51,6 +51,9 @@ func TestOutboundTransportIsUDPMatchesTheCore(t *testing.T) {
 		{"capitalised wireguard", map[string]any{"protocol": "WireGuard"}, true},
 		{"upper hysteria", map[string]any{"protocol": "HYSTERIA"}, true},
 		{"amneziawg", map[string]any{"protocol": "amneziawg"}, true},
+		// The core's MASQUE client dials HTTP/3 over QUIC unless the ALPN offers h2 without h3.
+		{"masque over http/3", map[string]any{"protocol": "masque", "streamSettings": map[string]any{"network": "masque"}}, true},
+		{"masque pinned to http/2", map[string]any{"protocol": "masque", "streamSettings": map[string]any{"network": "masque", "tlsSettings": map[string]any{"alpn": []any{"h2"}}}}, false},
 		{"kcp transport", map[string]any{"streamSettings": map[string]any{"network": "kcp"}}, true},
 		{"kcp transport capitalised", map[string]any{"streamSettings": map[string]any{"network": "KCP"}}, true},
 		{"mkcp alias", map[string]any{"streamSettings": map[string]any{"network": "mkcp"}}, true},
@@ -107,6 +110,37 @@ func TestBuildBatchTestConfigReadsTheProtocolIDLikeTheCore(t *testing.T) {
 	}
 	if protocol, _ := awg["protocol"].(string); protocol != "socks" {
 		t.Errorf(`"AmneziaWG" protocol = %q, want %q: a raw amneziawg entry fails the whole temp config`, protocol, "socks")
+	}
+}
+
+func TestTestOutboundsRejectsUntestableIDsInAnyCase(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+	}{
+		{"canonical freedom", "freedom"},
+		{"capitalised freedom", "Freedom"},
+		{"upper freedom", "FREEDOM"},
+		{"canonical blackhole", "blackhole"},
+		{"capitalised blackhole", "Blackhole"},
+	}
+
+	const wantErr = "Outbound has no testable endpoint"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			batch := mustJSON(t, []any{map[string]any{"tag": "t1", "protocol": tt.protocol}})
+			results, err := (&OutboundService{}).TestOutbounds(batch, "", "", "tcp")
+			if err != nil {
+				t.Fatalf("TestOutbounds: %v", err)
+			}
+			r := results[0]
+			if r.Success {
+				t.Errorf("%q outbound = %+v, want a rejection", tt.protocol, r)
+			}
+			if r.Error != wantErr {
+				t.Errorf("%q error = %q, want %q", tt.protocol, r.Error, wantErr)
+			}
+		})
 	}
 }
 

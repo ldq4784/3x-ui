@@ -4,10 +4,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/xlzd/gotp"
 
 	"github.com/mhsanaei/3x-ui/v3/internal/database"
+	"github.com/mhsanaei/3x-ui/v3/internal/database/dbtest"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
 )
 
@@ -51,14 +53,7 @@ func TestResetSettingsRegeneratesSubscriptionPaths(t *testing.T) {
 
 func setupSettingTestDB(t *testing.T) {
 	t.Helper()
-	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := database.CloseDB(); err != nil {
-			t.Fatal(err)
-		}
-	})
+	dbtest.InitDB(t, filepath.Join(t.TempDir(), "x-ui.db"))
 }
 
 func TestGetAllSettingViewRedactsSecrets(t *testing.T) {
@@ -229,6 +224,9 @@ func TestVerifyTwoFactorCode(t *testing.T) {
 
 	if err := s.VerifyTwoFactorCode(gotp.NewDefaultTOTP(token).Now()); err != nil {
 		t.Fatalf("valid code rejected: %v", err)
+	}
+	if err := s.VerifyTwoFactorCode(gotp.NewDefaultTOTP(token).AtTime(time.Now().Add(-30 * time.Second))); err != nil {
+		t.Fatalf("previous window code rejected: %v", err)
 	}
 	if err := s.VerifyTwoFactorCode("000000"); err == nil {
 		t.Fatal("invalid code accepted")
