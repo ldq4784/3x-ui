@@ -36,7 +36,7 @@ jobs:
           - 386
           - armv5
           - s390x
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -368,7 +368,7 @@ jobs:
     name: Publish rolling dev release
     needs: [build, build-windows]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
     # Serialize racing pushes; never cancel an in-flight upload, or the dev

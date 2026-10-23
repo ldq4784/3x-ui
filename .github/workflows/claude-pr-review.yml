@@ -22,7 +22,7 @@ jobs:
           && github.event.issue.state == 'open'
           && startsWith(github.event.comment.body, '@claude review')
           && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     permissions:
       pull-requests: write
@@ -90,7 +90,7 @@ jobs:
   review:
     needs: prepare
     if: needs.prepare.outputs.done != 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hostedself-hosted
     timeout-minutes: 45
     concurrency:
       group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
@@ -335,7 +335,7 @@ jobs:
   post:
     needs: [prepare, review]
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.done != 'true' && needs.review.result != 'cancelled' }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     permissions:
       pull-requests: write

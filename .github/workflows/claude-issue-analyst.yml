@@ -24,7 +24,7 @@ jobs:
           && !github.event.issue.pull_request
           && startsWith(github.event.comment.body, '@claude analyze')
           && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 40
     concurrency:
       group: claude-issue-${{ github.event.issue.number }}
