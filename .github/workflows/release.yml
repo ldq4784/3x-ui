@@ -250,6 +250,12 @@ jobs:
 
       - name: Build 3X-UI for Windows (CGO)
         run: |
+          # 1. Generate Windows resource (.syso) using native host environment
+          PANEL_VERSION=$(tr -d '[:space:]' < internal/config/version)
+          GOOS="" GOARCH="" go run github.com/tc-hib/go-winres@v0.3.3 make --arch ${{ matrix.platform }} \
+            --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
+
+          # 2. Cross-compile 3X-UI for Windows
           export PATH="/tmp/llvm-mingw/bin:$PATH"
           export CGO_ENABLED=1
           export GOOS=windows
@@ -263,10 +269,6 @@ jobs:
 
           go version
           $CC --version
-
-          PANEL_VERSION=$(tr -d '[:space:]' < internal/config/version)
-          go run github.com/tc-hib/go-winres@v0.3.3 make --arch ${{ matrix.platform }} \
-            --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
 
           LDFLAGS="-w -s"
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then
