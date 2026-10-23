@@ -47,11 +47,27 @@ jobs:
       # at compile time. internal/web/dist/ is .gitignored, so on a fresh CI
       # checkout it doesn't exist until vite emits it.
       - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+        run: |
+          if ! command -v node >/dev/null 2>&1; then
+            for nvm_dir in "$HOME/.nvm" "/root/.nvm"; do
+              if [ -s "$nvm_dir/nvm.sh" ]; then
+                export NVM_DIR="$nvm_dir"
+                . "$nvm_dir/nvm.sh"
+                break
+              fi
+            done
+            if command -v node >/dev/null 2>&1; then
+              NODE_BIN_DIR=$(dirname "$(which node)")
+              echo "$NODE_BIN_DIR" >> $GITHUB_PATH
+              export PATH="$NODE_BIN_DIR:$PATH"
+            fi
+          fi
+          if ! command -v node >/dev/null 2>&1; then
+            echo "ERROR: node not found in PATH or NVM" >&2
+            exit 1
+          fi
+          echo "Using node: $(which node) ($(node -v))"
+          echo "Using npm: $(which npm) ($(npm -v))"
 
       - name: Build frontend bundle
         run: |
@@ -187,11 +203,27 @@ jobs:
           check-latest: true
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+        run: |
+          if ! command -v node >/dev/null 2>&1; then
+            for nvm_dir in "$HOME/.nvm" "/root/.nvm"; do
+              if [ -s "$nvm_dir/nvm.sh" ]; then
+                export NVM_DIR="$nvm_dir"
+                . "$nvm_dir/nvm.sh"
+                break
+              fi
+            done
+            if command -v node >/dev/null 2>&1; then
+              NODE_BIN_DIR=$(dirname "$(which node)")
+              echo "$NODE_BIN_DIR" >> $GITHUB_PATH
+              export PATH="$NODE_BIN_DIR:$PATH"
+            fi
+          fi
+          if ! command -v node >/dev/null 2>&1; then
+            echo "ERROR: node not found in PATH or NVM" >&2
+            exit 1
+          fi
+          echo "Using node: $(which node) ($(node -v))"
+          echo "Using npm: $(which npm) ($(npm -v))"
 
       - name: Build frontend bundle
         run: |

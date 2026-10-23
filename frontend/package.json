@@ -5,8 +5,8 @@
   "type": "module",
   "description": "3x-ui panel frontend (React 19 + Ant Design 6 + Vite 8).",
   "engines": {
-    "node": ">=26.0.0",
-    "npm": ">=11.0.0"
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
   },
   "scripts": {
     "dev": "vite",
