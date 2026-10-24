@@ -17,72 +17,34 @@ jobs:
         platform:
           - amd64
           - arm64
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Setup Go
-        run: |
-          if ! command -v go >/dev/null 2>&1; then
-            for go_dir in "/usr/local/go/bin" "/usr/bin" "/root/go/bin" "$HOME/go/bin"; do
-              if [ -x "$go_dir/go" ]; then
-                echo "$go_dir" >> $GITHUB_PATH
-                export PATH="$go_dir:$PATH"
-                break
-              fi
-            done
-            if ! command -v go >/dev/null 2>&1; then
-              RUNNER_TOOL_GO=$(find /root/actions-runner/_work/_tool/go "$HOME/actions-runner/_work/_tool/go" -name go -type f -perm -111 2>/dev/null | sort -V | tail -n1)
-              if [ -n "$RUNNER_TOOL_GO" ]; then
-                GO_BIN=$(dirname "$RUNNER_TOOL_GO")
-                echo "$GO_BIN" >> $GITHUB_PATH
-                export PATH="$GO_BIN:$PATH"
-              fi
-            fi
-          fi
-          if ! command -v go >/dev/null 2>&1; then
-            echo "ERROR: Go not found on system" >&2
-            exit 1
-          fi
-          echo "Using Go: $(which go) ($(go version))"
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
 
       # Frontend dist must be built BEFORE go build — Go's //go:embed
       # all:dist directive in internal/web/web.go requires internal/web/dist/ to exist
       # at compile time. internal/web/dist/ is .gitignored, so on a fresh CI
       # checkout it doesn't exist until vite emits it.
       - name: Setup Node.js
-        run: |
-          if ! command -v node >/dev/null 2>&1; then
-            for nvm_dir in "$HOME/.nvm" "/root/.nvm"; do
-              if [ -s "$nvm_dir/nvm.sh" ]; then
-                export NVM_DIR="$nvm_dir"
-                . "$nvm_dir/nvm.sh"
-                break
-              fi
-            done
-            if command -v node >/dev/null 2>&1; then
-              NODE_BIN_DIR=$(dirname "$(which node)")
-              echo "$NODE_BIN_DIR" >> $GITHUB_PATH
-              export PATH="$NODE_BIN_DIR:$PATH"
-            fi
-          fi
-          if ! command -v node >/dev/null 2>&1; then
-            echo "ERROR: node not found in PATH or NVM" >&2
-            exit 1
-          fi
-          echo "Using node: $(which node) ($(node -v))"
-          echo "Using npm: $(which npm) ($(npm -v))"
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend bundle
         run: |
-          cd frontend
-          if [ ! -d "node_modules" ]; then
-            echo "Installing frontend dependencies..."
-            npm ci
-          fi
+          npm ci
           npm run build
-          cd ..
+        working-directory: frontend
 
       - name: Build 3X-UI
         run: |
@@ -92,29 +54,23 @@ jobs:
           export GOOS=linux
           export GOARCH=${{ matrix.platform }}
 
-          # Use Bootlin prebuilt cross-toolchains (cached persistently on host)
+          # Use Bootlin prebuilt cross-toolchains
           case "${{ matrix.platform }}" in
             amd64) BOOTLIN_ARCH="x86-64" ;;
             arm64) BOOTLIN_ARCH="aarch64" ;;
           esac
 
-          BOOTLIN_BASE="/opt/bootlin"
-          mkdir -p "$BOOTLIN_BASE" 2>/dev/null || BOOTLIN_BASE="$HOME/.cache/bootlin"
-          TOOLCHAIN_DIR=$(find "$BOOTLIN_BASE" -maxdepth 1 -type d -name "${BOOTLIN_ARCH}--musl--stable-*" 2>/dev/null | head -n1)
-          if [ -z "$TOOLCHAIN_DIR" ] || [ ! -x "$(find "$TOOLCHAIN_DIR/bin" -name '*-gcc.br_real' -type f 2>/dev/null | head -n1)" ]; then
-            echo "Resolving Bootlin musl toolchain for arch=$BOOTLIN_ARCH (platform=${{ matrix.platform }})..."
-            TARBALL_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains/$BOOTLIN_ARCH/tarballs/"
-            TARBALL_URL=$(curl -fsSL $CURL_RETRY "$TARBALL_BASE" | grep -oE "${BOOTLIN_ARCH}--musl--stable-[^\"]+\\.tar\\.xz" | sort -r | head -n1)
-            [ -z "$TARBALL_URL" ] && { echo "Failed to locate Bootlin musl toolchain for arch=$BOOTLIN_ARCH" >&2; exit 1; }
-            echo "Downloading and caching to $BOOTLIN_BASE..."
-            mkdir -p "$BOOTLIN_BASE"
-            curl -fL -sS $CURL_RETRY -o "/tmp/$(basename "$TARBALL_URL")" "$TARBALL_BASE/$TARBALL_URL"
-            tar -xf "/tmp/$(basename "$TARBALL_URL")" -C "$BOOTLIN_BASE"
-            rm -f "/tmp/$(basename "$TARBALL_URL")"
-            TOOLCHAIN_DIR=$(find "$BOOTLIN_BASE" -maxdepth 1 -type d -name "${BOOTLIN_ARCH}--musl--stable-*" | head -n1)
-          else
-            echo "Found cached Bootlin toolchain in $TOOLCHAIN_DIR"
-          fi
+          BOOTLIN_BASE="/tmp/bootlin"
+          mkdir -p "$BOOTLIN_BASE"
+          echo "Resolving Bootlin musl toolchain for arch=$BOOTLIN_ARCH (platform=${{ matrix.platform }})..."
+          TARBALL_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains/$BOOTLIN_ARCH/tarballs/"
+          TARBALL_URL=$(curl -fsSL $CURL_RETRY "$TARBALL_BASE" | grep -oE "${BOOTLIN_ARCH}--musl--stable-[^\"]+\\.tar\\.xz" | sort -r | head -n1)
+          [ -z "$TARBALL_URL" ] && { echo "Failed to locate Bootlin musl toolchain for arch=$BOOTLIN_ARCH" >&2; exit 1; }
+          echo "Downloading $TARBALL_URL..."
+          curl -fL -sS $CURL_RETRY -o "/tmp/$(basename "$TARBALL_URL")" "$TARBALL_BASE/$TARBALL_URL"
+          tar -xf "/tmp/$(basename "$TARBALL_URL")" -C "$BOOTLIN_BASE"
+          rm -f "/tmp/$(basename "$TARBALL_URL")"
+          TOOLCHAIN_DIR=$(find "$BOOTLIN_BASE" -maxdepth 1 -type d -name "${BOOTLIN_ARCH}--musl--stable-*" | head -n1)
           export PATH="$(realpath "$TOOLCHAIN_DIR")/bin:$PATH"
           export CC=$(realpath "$(find "$TOOLCHAIN_DIR/bin" -name '*-gcc.br_real' -type f -executable | head -n1)")
           [ -z "$CC" ] && { echo "No gcc.br_real found in $TOOLCHAIN_DIR/bin" >&2; exit 1; }
@@ -139,41 +95,23 @@ jobs:
           mkdir x-ui/bin
           cd x-ui/bin
 
-          # Download and cache dependencies
-          ASSET_CACHE="/opt/3x-ui-assets"
-          mkdir -p "$ASSET_CACHE" 2>/dev/null || ASSET_CACHE="$HOME/.cache/3x-ui-assets"
-          mkdir -p "$ASSET_CACHE"
-
+          # Download dependencies
           XRAY_VER=$(curl -sf $CURL_RETRY -o /dev/null -w '%{redirect_url}' "https://github.com/XTLS/Xray-core/releases/latest" | sed -n 's#.*/releases/tag/##p')
           XRAY_VER=${XRAY_VER:-v26.10.21}
           Xray_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/"
 
           if [ "${{ matrix.platform }}" == "amd64" ]; then
-            XRAY_ZIP="Xray-linux-64-${XRAY_VER}.zip"
-            if [ ! -f "$ASSET_CACHE/$XRAY_ZIP" ]; then
-              fetch -O "$ASSET_CACHE/$XRAY_ZIP" "${Xray_URL}Xray-linux-64.zip"
-            fi
-            cp "$ASSET_CACHE/$XRAY_ZIP" Xray-linux-64.zip
+            fetch "${Xray_URL}Xray-linux-64.zip"
             unzip -q Xray-linux-64.zip
             rm -f Xray-linux-64.zip
           elif [ "${{ matrix.platform }}" == "arm64" ]; then
-            XRAY_ZIP="Xray-linux-arm64-v8a-${XRAY_VER}.zip"
-            if [ ! -f "$ASSET_CACHE/$XRAY_ZIP" ]; then
-              fetch -O "$ASSET_CACHE/$XRAY_ZIP" "${Xray_URL}Xray-linux-arm64-v8a.zip"
-            fi
-            cp "$ASSET_CACHE/$XRAY_ZIP" Xray-linux-arm64-v8a.zip
+            fetch "${Xray_URL}Xray-linux-arm64-v8a.zip"
             unzip -q Xray-linux-arm64-v8a.zip
             rm -f Xray-linux-arm64-v8a.zip
           fi
 
-          if [ ! -f "$ASSET_CACHE/geoip.dat" ]; then
-            fetch -O "$ASSET_CACHE/geoip.dat" https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-          fi
-          if [ ! -f "$ASSET_CACHE/geosite.dat" ]; then
-            fetch -O "$ASSET_CACHE/geosite.dat" https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
-          fi
-          cp "$ASSET_CACHE/geoip.dat" geoip.dat
-          cp "$ASSET_CACHE/geosite.dat" geosite.dat
+          fetch https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+          fetch https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
 
           mv xray xray-linux-${{ matrix.platform }}
 
@@ -182,13 +120,10 @@ jobs:
               MTG_MULTI_VER=$(curl -sf $CURL_RETRY -o /dev/null -w '%{redirect_url}' "https://github.com/mhsanaei/mtg-multi/releases/latest" | sed -n 's#.*/releases/tag/##p')
               if [ -z "$MTG_MULTI_VER" ]; then echo "could not resolve the latest mtg-multi release tag"; exit 1; fi
               MTG_PKG="mtg-multi-${MTG_MULTI_VER#v}-linux-${{ matrix.platform }}"
-              MTG_TAR="${MTG_PKG}.tar.gz"
-              if [ ! -f "$ASSET_CACHE/$MTG_TAR" ]; then
-                curl -sfL $CURL_RETRY -o "$ASSET_CACHE/$MTG_TAR" "https://github.com/mhsanaei/mtg-multi/releases/download/${MTG_MULTI_VER}/${MTG_PKG}.tar.gz"
-              fi
-              tar -xzf "$ASSET_CACHE/$MTG_TAR"
+              curl -sfL $CURL_RETRY -o "${MTG_PKG}.tar.gz" "https://github.com/mhsanaei/mtg-multi/releases/download/${MTG_MULTI_VER}/${MTG_PKG}.tar.gz"
+              tar -xzf "${MTG_PKG}.tar.gz"
               mv "${MTG_PKG}/mtg-multi" "mtg-linux-${{ matrix.platform }}"
-              rm -rf "${MTG_PKG}"
+              rm -rf "${MTG_PKG}" "${MTG_PKG}.tar.gz"
               ;;
           esac
           cd ../..
@@ -218,7 +153,7 @@ jobs:
           prerelease: false
 
   # =================================
-  #  Windows Build (cross-compiled on Linux self-hosted runner)
+  #  Windows Build (cross-compiled on Linux runner)
   # =================================
   build-windows:
     name: Build Windows (${{ matrix.platform }})
@@ -230,68 +165,30 @@ jobs:
         platform:
           - amd64
           - arm64
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Setup Go
-        run: |
-          if ! command -v go >/dev/null 2>&1; then
-            for go_dir in "/usr/local/go/bin" "/usr/bin" "/root/go/bin" "$HOME/go/bin"; do
-              if [ -x "$go_dir/go" ]; then
-                echo "$go_dir" >> $GITHUB_PATH
-                export PATH="$go_dir:$PATH"
-                break
-              fi
-            done
-            if ! command -v go >/dev/null 2>&1; then
-              RUNNER_TOOL_GO=$(find /root/actions-runner/_work/_tool/go "$HOME/actions-runner/_work/_tool/go" -name go -type f -perm -111 2>/dev/null | sort -V | tail -n1)
-              if [ -n "$RUNNER_TOOL_GO" ]; then
-                GO_BIN=$(dirname "$RUNNER_TOOL_GO")
-                echo "$GO_BIN" >> $GITHUB_PATH
-                export PATH="$GO_BIN:$PATH"
-              fi
-            fi
-          fi
-          if ! command -v go >/dev/null 2>&1; then
-            echo "ERROR: Go not found on system" >&2
-            exit 1
-          fi
-          echo "Using Go: $(which go) ($(go version))"
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
 
       - name: Setup Node.js
-        run: |
-          if ! command -v node >/dev/null 2>&1; then
-            for nvm_dir in "$HOME/.nvm" "/root/.nvm"; do
-              if [ -s "$nvm_dir/nvm.sh" ]; then
-                export NVM_DIR="$nvm_dir"
-                . "$nvm_dir/nvm.sh"
-                break
-              fi
-            done
-            if command -v node >/dev/null 2>&1; then
-              NODE_BIN_DIR=$(dirname "$(which node)")
-              echo "$NODE_BIN_DIR" >> $GITHUB_PATH
-              export PATH="$NODE_BIN_DIR:$PATH"
-            fi
-          fi
-          if ! command -v node >/dev/null 2>&1; then
-            echo "ERROR: node not found in PATH or NVM" >&2
-            exit 1
-          fi
-          echo "Using node: $(which node) ($(node -v))"
-          echo "Using npm: $(which npm) ($(npm -v))"
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend bundle
         run: |
-          cd frontend
-          if [ ! -d "node_modules" ]; then
-            echo "Installing frontend dependencies..."
-            npm ci
-          fi
+          npm ci
           npm run build
-          cd ..
+        working-directory: frontend
 
       - name: Install LLVM-MinGW Toolchain
         run: |
@@ -303,34 +200,21 @@ jobs:
             *) echo "Unsupported runner arch: $RUNNER_ARCH"; exit 1 ;;
           esac
 
-          LLVM_BASE="/opt/llvm-mingw"
-          mkdir -p "$LLVM_BASE" 2>/dev/null || LLVM_BASE="$HOME/.cache/llvm-mingw"
-
-          if [ ! -f "$LLVM_BASE/bin/aarch64-w64-mingw32-gcc" ]; then
-            echo "Downloading LLVM-MinGW for ${LLVM_ARCH} to $LLVM_BASE..."
-            mkdir -p "$LLVM_BASE"
-            curl -fsSL $CURL_RETRY "https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-ucrt-ubuntu-22.04-${LLVM_ARCH}.tar.xz" | tar -xJ -C "$LLVM_BASE" --strip-components=1
-          else
-            echo "Found cached LLVM-MinGW in $LLVM_BASE"
-          fi
+          LLVM_BASE="/tmp/llvm-mingw"
+          mkdir -p "$LLVM_BASE"
+          echo "Downloading LLVM-MinGW for ${LLVM_ARCH} to $LLVM_BASE..."
+          curl -fsSL $CURL_RETRY "https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-ucrt-ubuntu-22.04-${LLVM_ARCH}.tar.xz" | tar -xJ -C "$LLVM_BASE" --strip-components=1
           echo "$LLVM_BASE/bin" >> $GITHUB_PATH
 
       - name: Build 3X-UI for Windows (CGO)
         run: |
           # 1. Generate Windows resource (.syso) using native host environment
           PANEL_VERSION=$(tr -d '[:space:]' < internal/config/version)
-          if command -v go-winres >/dev/null 2>&1; then
-            go-winres make --arch ${{ matrix.platform }} --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
-          elif [ -x "$HOME/go/bin/go-winres" ]; then
-            "$HOME/go/bin/go-winres" make --arch ${{ matrix.platform }} --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
-          else
-            GOOS="" GOARCH="" go run github.com/tc-hib/go-winres@v0.3.3 make --arch ${{ matrix.platform }} \
-              --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
-          fi
+          GOOS="" GOARCH="" go run github.com/tc-hib/go-winres@v0.3.3 make --arch ${{ matrix.platform }} \
+            --product-version "$PANEL_VERSION" --file-version "$PANEL_VERSION"
 
           # 2. Cross-compile 3X-UI for Windows
-          LLVM_BASE="/opt/llvm-mingw"
-          [ ! -d "$LLVM_BASE/bin" ] && LLVM_BASE="$HOME/.cache/llvm-mingw"
+          LLVM_BASE="/tmp/llvm-mingw"
           export PATH="$LLVM_BASE/bin:$PATH"
           export CGO_ENABLED=1
           export GOOS=windows
@@ -354,63 +238,35 @@ jobs:
       - name: Copy and download resources
         run: |
           CURL_RETRY="--retry 5 --retry-all-errors --retry-delay 3"
-          unzip_file() {
-            if command -v unzip >/dev/null 2>&1; then
-              unzip -q -o "$1" ${2:+-d "$2"}
-            else
-              python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2] if len(sys.argv) > 2 else '.')" "$@"
-            fi
-          }
 
           mkdir -p x-ui/bin
           cp xui-release.exe x-ui/3x-ui.exe
 
           cd x-ui/bin
 
-          ASSET_CACHE="/opt/3x-ui-assets"
-          mkdir -p "$ASSET_CACHE" 2>/dev/null || ASSET_CACHE="$HOME/.cache/3x-ui-assets"
-          mkdir -p "$ASSET_CACHE"
-
           XRAY_VER=$(curl -sf $CURL_RETRY -o /dev/null -w '%{redirect_url}' "https://github.com/XTLS/Xray-core/releases/latest" | sed -n 's#.*/releases/tag/##p')
           XRAY_VER=${XRAY_VER:-v26.10.21}
           Xray_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/"
 
           if [ "${{ matrix.platform }}" = "arm64" ]; then
-            XRAY_ZIP="Xray-windows-arm64-v8a-${XRAY_VER}.zip"
-            if [ ! -f "$ASSET_CACHE/$XRAY_ZIP" ]; then
-              curl -fsSL $CURL_RETRY -o "$ASSET_CACHE/$XRAY_ZIP" "${Xray_URL}Xray-windows-arm64-v8a.zip"
-            fi
-            cp "$ASSET_CACHE/$XRAY_ZIP" Xray-windows.zip
+            curl -fsSL $CURL_RETRY -o Xray-windows.zip "${Xray_URL}Xray-windows-arm64-v8a.zip"
           else
-            XRAY_ZIP="Xray-windows-64-${XRAY_VER}.zip"
-            if [ ! -f "$ASSET_CACHE/$XRAY_ZIP" ]; then
-              curl -fsSL $CURL_RETRY -o "$ASSET_CACHE/$XRAY_ZIP" "${Xray_URL}Xray-windows-64.zip"
-            fi
-            cp "$ASSET_CACHE/$XRAY_ZIP" Xray-windows.zip
+            curl -fsSL $CURL_RETRY -o Xray-windows.zip "${Xray_URL}Xray-windows-64.zip"
           fi
-          unzip_file Xray-windows.zip
+          unzip -q -o Xray-windows.zip
           rm -f Xray-windows.zip geoip.dat geosite.dat
 
-          if [ ! -f "$ASSET_CACHE/geoip.dat" ]; then
-            curl -fsSL $CURL_RETRY -o "$ASSET_CACHE/geoip.dat" https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-          fi
-          if [ ! -f "$ASSET_CACHE/geosite.dat" ]; then
-            curl -fsSL $CURL_RETRY -o "$ASSET_CACHE/geosite.dat" https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
-          fi
-          cp "$ASSET_CACHE/geoip.dat" geoip.dat
-          cp "$ASSET_CACHE/geosite.dat" geosite.dat
+          curl -fsSL $CURL_RETRY -o geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+          curl -fsSL $CURL_RETRY -o geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
 
           mv xray.exe "xray-windows-${{ matrix.platform }}.exe"
 
           MTG_MULTI_VER=$(curl -sf $CURL_RETRY -o /dev/null -w '%{redirect_url}' "https://github.com/mhsanaei/mtg-multi/releases/latest" | sed -n 's#.*/releases/tag/##p')
           MTG_PKG="mtg-multi-${MTG_MULTI_VER#v}-windows-${{ matrix.platform }}"
-          MTG_ZIP="${MTG_PKG}.zip"
-          if [ ! -f "$ASSET_CACHE/$MTG_ZIP" ]; then
-            curl -fsSL $CURL_RETRY -o "$ASSET_CACHE/$MTG_ZIP" "https://github.com/mhsanaei/mtg-multi/releases/download/${MTG_MULTI_VER}/${MTG_PKG}.zip"
-          fi
-          unzip_file "$ASSET_CACHE/$MTG_ZIP" mtg-tmp
+          curl -fsSL $CURL_RETRY -o "${MTG_PKG}.zip" "https://github.com/mhsanaei/mtg-multi/releases/download/${MTG_MULTI_VER}/${MTG_PKG}.zip"
+          unzip -q -o "${MTG_PKG}.zip" -d mtg-tmp
           mv "mtg-tmp/${MTG_PKG}/mtg-multi.exe" "mtg-windows-${{ matrix.platform }}.exe"
-          rm -rf mtg-tmp
+          rm -rf mtg-tmp "${MTG_PKG}.zip"
 
           cd ../..
 
@@ -418,11 +274,7 @@ jobs:
 
       - name: Package to Zip
         run: |
-          if command -v zip >/dev/null 2>&1; then
-            zip -r "x-ui-windows-${{ matrix.platform }}.zip" x-ui
-          else
-            python3 -c "import shutil; shutil.make_archive('x-ui-windows-${{ matrix.platform }}', 'zip', '.', 'x-ui')"
-          fi
+          zip -r "x-ui-windows-${{ matrix.platform }}.zip" x-ui
           sha256sum "x-ui-windows-${{ matrix.platform }}.zip" > "x-ui-windows-${{ matrix.platform }}.zip.sha256"
 
       - name: Upload files to Artifacts
