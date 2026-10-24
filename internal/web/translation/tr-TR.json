@@ -1132,7 +1132,9 @@
         "updateResult": "{ok} düğümde güncelleme başlatıldı, {failed} başarısız",
         "updateNoneEligible": "En az bir çevrimiçi ve etkin düğüm seçin",
         "saveMtls": "Düğüm mTLS kaydet",
-        "reloadMtls": "Ana mTLS kimlik bilgilerini yeniden yükle"
+        "reloadMtls": "Ana mTLS kimlik bilgilerini yeniden yükle",
+        "xrayUpdateStarted": "Xray version switch initiated",
+        "xrayUpdateResult": "Xray adjusted on {ok} nodes, {failed} failed"
       },
       "tlsVerifyMode": "TLS Doğrulaması",
       "tlsVerifyModeHint": "Panelin düğümün HTTPS sertifikasını nasıl doğrulayacağını belirler. Sabitle veya Atla, kendinden imzalı sertifikalar içindir (yalnızca https düğümleri).",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "base64 veya hex SHA-256",
       "fetchPin": "Getir",
       "pinFetched": "Düğümün geçerli sertifikası alındı",
-      "pinFetchFailed": "Sertifika alınamadı"
+      "pinFetchFailed": "Sertifika alınamadı",
+      "adjustXray": "Adjust Xray version",
+      "adjustXraySelected": "Adjust Xray ({count})",
+      "adjustXrayTitle": "Adjust Xray Version",
+      "selectXrayVersion": "Select target Xray version",
+      "adjustXrayNotice": "When switching versions, the target node will download the core and restart the Xray service."
     },
     "settings": {
       "defaultTag": "Varsayılan",

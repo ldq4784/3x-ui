@@ -83,6 +83,20 @@ export function useNodeMutations() {
     },
   });
 
+  const updateXraysMut = useMutation({
+    mutationFn: ({ ids, version }: { ids: number[]; version: string }) =>
+      HttpUtil.post<NodeUpdateResult[]>(
+        '/panel/api/nodes/updateXray',
+        { ids, version },
+        {
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    onSuccess: (msg) => {
+      if (msg?.success) invalidate();
+    },
+  });
+
   return {
     create: (payload: Partial<NodeRecord>) => createMut.mutateAsync(payload),
     update: (id: number, payload: Partial<NodeRecord>) => updateMut.mutateAsync({ id, payload }),
@@ -91,6 +105,8 @@ export function useNodeMutations() {
     probe: (id: number) => probeMut.mutateAsync(id),
     updatePanels: (ids: number[], dev: boolean): Promise<Msg<NodeUpdateResult[]>> =>
       updatePanelsMut.mutateAsync({ ids, dev }),
+    updateXrays: (ids: number[], version: string): Promise<Msg<NodeUpdateResult[]>> =>
+      updateXraysMut.mutateAsync({ ids, version }),
     testConnection: async (payload: Partial<NodeRecord>): Promise<Msg<ProbeResult>> => {
       const raw = await HttpUtil.post('/panel/api/nodes/test', payload);
       return parseMsg(raw, ProbeResultSchema, 'nodes/test');

@@ -1132,7 +1132,9 @@
         "updateResult": "Actualización iniciada en {ok} nodo(s), {failed} fallaron",
         "updateNoneEligible": "Selecciona al menos un nodo en línea y habilitado",
         "saveMtls": "Guardar mTLS del nodo",
-        "reloadMtls": "Reload master mTLS credential"
+        "reloadMtls": "Reload master mTLS credential",
+        "xrayUpdateStarted": "Xray version switch initiated",
+        "xrayUpdateResult": "Xray adjusted on {ok} nodes, {failed} failed"
       },
       "tlsVerifyMode": "Verificación TLS",
       "tlsVerifyModeHint": "Cómo valida el panel el certificado HTTPS del nodo. Fijar u Omitir son para certificados autofirmados (solo nodos https).",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "SHA-256 en base64 o hex",
       "fetchPin": "Obtener",
       "pinFetched": "Se obtuvo el certificado actual del nodo",
-      "pinFetchFailed": "No se pudo obtener el certificado"
+      "pinFetchFailed": "No se pudo obtener el certificado",
+      "adjustXray": "Adjust Xray version",
+      "adjustXraySelected": "Adjust Xray ({count})",
+      "adjustXrayTitle": "Adjust Xray Version",
+      "selectXrayVersion": "Select target Xray version",
+      "adjustXrayNotice": "When switching versions, the target node will download the core and restart the Xray service."
     },
     "settings": {
       "defaultTag": "Predeterminado",

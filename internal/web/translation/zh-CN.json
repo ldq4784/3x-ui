@@ -1132,7 +1132,9 @@
         "updateResult": "已在 {ok} 个节点上触发更新，{failed} 个失败",
         "updateNoneEligible": "请至少选择一个在线且已启用的节点",
         "saveMtls": "保存节点 mTLS",
-        "reloadMtls": "Reload master mTLS credential"
+        "reloadMtls": "Reload master mTLS credential",
+        "xrayUpdateStarted": "已开始调整 Xray 版本",
+        "xrayUpdateResult": "已在 {ok} 个节点上调整 Xray，{failed} 个失败"
       },
       "tlsVerifyMode": "TLS 校验",
       "tlsVerifyModeHint": "面板如何校验节点的 HTTPS 证书。固定或跳过用于自签名证书（仅 https 节点）。",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "base64 或 hex 的 SHA-256",
       "fetchPin": "获取",
       "pinFetched": "已获取节点当前证书",
-      "pinFetchFailed": "无法获取证书"
+      "pinFetchFailed": "无法获取证书",
+      "adjustXray": "调整 Xray 版本",
+      "adjustXraySelected": "调整 Xray ({count})",
+      "adjustXrayTitle": "调整 Xray 版本",
+      "selectXrayVersion": "选择目标 Xray 版本",
+      "adjustXrayNotice": "切换版本时，目标节点将下载对应核心并重启 Xray 服务。"
     },
     "settings": {
       "defaultTag": "默认",

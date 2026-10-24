@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
@@ -41,6 +42,7 @@ func (a *NodeController) initRouter(g *gin.RouterGroup) {
 	g.POST("/inbounds", a.inbounds)
 	g.POST("/probe/:id", a.probe)
 	g.POST("/updatePanel", a.updatePanel)
+	g.POST("/updateXray", a.updateXray)
 	g.GET("/history/:id/:metric/:bucket", a.history)
 	g.POST("/mtls/ca", a.mtlsCa)
 	g.POST("/mtls/trustCA", a.setMtlsTrustCA)
@@ -347,6 +349,27 @@ func (a *NodeController) updatePanel(c *gin.Context) {
 	}
 	results, err := a.nodeService.UpdatePanels(req.Ids, req.Dev)
 	jsonMsgObj(c, I18nWeb(c, "pages.nodes.toasts.updateStarted"), results, err)
+}
+
+func (a *NodeController) updateXray(c *gin.Context) {
+	var req struct {
+		Ids     []int  `json:"ids"`
+		Version string `json:"version"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	if len(req.Ids) == 0 {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), fmt.Errorf("no nodes selected"))
+		return
+	}
+	if strings.TrimSpace(req.Version) == "" {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), fmt.Errorf("no version specified"))
+		return
+	}
+	results, err := a.nodeService.UpdateXrays(req.Ids, req.Version)
+	jsonMsgObj(c, I18nWeb(c, "pages.nodes.toasts.xrayUpdateStarted"), results, err)
 }
 
 func (a *NodeController) history(c *gin.Context) {

@@ -176,6 +176,10 @@ func (r *Remote) baseURL() (string, error) {
 }
 
 func (r *Remote) do(ctx context.Context, method, path string, body any) (*envelope, error) {
+	return r.doTimeout(ctx, method, path, body, remoteHTTPTimeout)
+}
+
+func (r *Remote) doTimeout(ctx context.Context, method, path string, body any, timeout time.Duration) (*envelope, error) {
 	// mtls nodes authenticate via the client certificate, so a bearer token is
 	// optional for them; every other mode still requires one.
 	if r.node.ApiToken == "" && r.node.TlsVerifyMode != "mtls" {
@@ -223,7 +227,7 @@ func (r *Remote) do(ctx context.Context, method, path string, body any) (*envelo
 		reqBody = bytes.NewReader(bodyBytes)
 	}
 
-	cctx, cancel := context.WithTimeout(netsafe.ContextWithAllowPrivate(ctx, r.node.AllowPrivateAddress), remoteHTTPTimeout)
+	cctx, cancel := context.WithTimeout(netsafe.ContextWithAllowPrivate(ctx, r.node.AllowPrivateAddress), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, method, target, reqBody)
 	if err != nil {
@@ -662,6 +666,12 @@ func (r *Remote) UpdateUser(ctx context.Context, ib *model.Inbound, oldEmail str
 
 func (r *Remote) RestartXray(ctx context.Context) error {
 	_, err := r.do(ctx, http.MethodPost, "panel/api/server/restartXrayService", nil)
+	return err
+}
+
+// InstallXray asks the node to download and switch its Xray core to the specified version.
+func (r *Remote) InstallXray(ctx context.Context, version string) error {
+	_, err := r.doTimeout(ctx, http.MethodPost, fmt.Sprintf("panel/api/server/installXray/%s", url.PathEscape(version)), nil, 3*time.Minute)
 	return err
 }
 

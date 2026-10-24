@@ -1132,7 +1132,9 @@
         "updateResult": "به‌روزرسانی روی {ok} نود آغاز شد، {failed} ناموفق",
         "updateNoneEligible": "حداقل یک نود آنلاین و فعال انتخاب کنید",
         "saveMtls": "ذخیره mTLS نود",
-        "reloadMtls": "Reload master mTLS credential"
+        "reloadMtls": "Reload master mTLS credential",
+        "xrayUpdateStarted": "Xray version switch initiated",
+        "xrayUpdateResult": "Xray adjusted on {ok} nodes, {failed} failed"
       },
       "tlsVerifyMode": "اعتبارسنجی TLS",
       "tlsVerifyModeHint": "اینکه پنل گواهی HTTPS نود را چطور بررسی کند. Pin یا Skip برای گواهی‌های self-signed است (فقط نودهای https).",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "SHA-256 به‌صورت base64 یا hex",
       "fetchPin": "دریافت",
       "pinFetched": "گواهیِ فعلیِ نود دریافت شد",
-      "pinFetchFailed": "دریافت گواهی ممکن نشد"
+      "pinFetchFailed": "دریافت گواهی ممکن نشد",
+      "adjustXray": "Adjust Xray version",
+      "adjustXraySelected": "Adjust Xray ({count})",
+      "adjustXrayTitle": "Adjust Xray Version",
+      "selectXrayVersion": "Select target Xray version",
+      "adjustXrayNotice": "When switching versions, the target node will download the core and restart the Xray service."
     },
     "settings": {
       "defaultTag": "پیش‌فرض",

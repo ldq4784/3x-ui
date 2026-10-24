@@ -1132,7 +1132,9 @@
         "updateResult": "Оновлення запущено на {ok} вузлах, {failed} не вдалося",
         "updateNoneEligible": "Виберіть принаймні один увімкнений вузол у мережі",
         "saveMtls": "Зберегти mTLS вузла",
-        "reloadMtls": "Reload master mTLS credential"
+        "reloadMtls": "Reload master mTLS credential",
+        "xrayUpdateStarted": "Xray version switch initiated",
+        "xrayUpdateResult": "Xray adjusted on {ok} nodes, {failed} failed"
       },
       "tlsVerifyMode": "Перевірка TLS",
       "tlsVerifyModeHint": "Як панель перевіряє HTTPS-сертифікат вузла. Закріплення або Пропуск — для самопідписаних сертифікатів (лише https-вузли).",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "SHA-256 у base64 або hex",
       "fetchPin": "Отримати",
       "pinFetched": "Поточний сертифікат вузла отримано",
-      "pinFetchFailed": "Не вдалося отримати сертифікат"
+      "pinFetchFailed": "Не вдалося отримати сертифікат",
+      "adjustXray": "Adjust Xray version",
+      "adjustXraySelected": "Adjust Xray ({count})",
+      "adjustXrayTitle": "Adjust Xray Version",
+      "selectXrayVersion": "Select target Xray version",
+      "adjustXrayNotice": "When switching versions, the target node will download the core and restart the Xray service."
     },
     "settings": {
       "defaultTag": "Типово",

@@ -1864,6 +1864,20 @@ install_x-ui() {
         chmod +x bin/mtg-linux-$(arch)
     fi
 
+    # Preserve the existing Xray binary across panel updates so a customized or
+    # downgraded Xray version is not unintentionally overwritten by the bundled one.
+    if [[ -n "${custom_bin_backup}" && -d "${custom_bin_backup}" ]]; then
+        for old_xray in "${custom_bin_backup}"/xray-linux-*; do
+            if [[ -f "$old_xray" && -x "$old_xray" ]]; then
+                echo -e "${green}Preserving current Xray core binary ($(basename "$old_xray"))...${plain}"
+                rm -f bin/xray-linux-*
+                cp -a "$old_xray" "bin/$(basename "$old_xray")"
+                chmod +x "bin/$(basename "$old_xray")"
+                break
+            fi
+        done
+    fi
+
     # Restore anything from the old bin/ that the fresh release doesn't ship
     # (custom geoip/geosite files, or anything else an admin hand-placed
     # there) -- never overwrites a same-named file the new release provides,

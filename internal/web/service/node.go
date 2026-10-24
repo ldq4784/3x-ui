@@ -976,6 +976,51 @@ func (s *NodeService) UpdatePanels(ids []int, dev bool) ([]NodeUpdateResult, err
 	return results, nil
 }
 
+// UpdateXrays triggers an Xray core version switch on each given node. Only
+// enabled, online nodes are eligible.
+func (s *NodeService) UpdateXrays(ids []int, version string) ([]NodeUpdateResult, error) {
+	mgr := runtime.GetManager()
+	if mgr == nil {
+		return nil, fmt.Errorf("runtime manager unavailable")
+	}
+	results, panics := fanoutInboundResults(ids, nodeFanoutConcurrency, func(i int) NodeUpdateResult {
+		id := ids[i]
+		n, err := s.GetById(id)
+		if err != nil || n == nil {
+			return NodeUpdateResult{Id: id, OK: false, Error: "node not found"}
+		}
+		res := NodeUpdateResult{Id: id, Name: n.Name}
+		switch {
+		case !n.Enable:
+			res.Error = "node is disabled"
+		case n.Status != "online":
+			res.Error = "node is offline"
+		default:
+			remote, remoteErr := mgr.RemoteFor(n)
+			if remoteErr != nil {
+				res.Error = remoteErr.Error()
+				break
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			updErr := remote.InstallXray(ctx, version)
+			cancel()
+			if updErr != nil {
+				res.Error = updErr.Error()
+			} else {
+				res.OK = true
+				_ = database.GetDB().Model(&model.Node{}).Where("id = ?", id).Update("xray_version", version).Error
+			}
+		}
+		return res
+	})
+	for i, panicErr := range panics {
+		if panicErr != nil {
+			results[i] = NodeUpdateResult{Id: ids[i], Error: panicErr.Error()}
+		}
+	}
+	return results, nil
+}
+
 func (s *NodeService) UpdateHeartbeat(id int, p HeartbeatPatch) error {
 	db := database.GetDB()
 	updates := map[string]any{

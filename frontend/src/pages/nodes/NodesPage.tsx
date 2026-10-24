@@ -33,6 +33,7 @@ import { useNodeMutations } from '@/api/queries/useNodeMutations';
 import AppSidebar from '@/layouts/AppSidebar';
 import NodeList from './NodeList';
 import NodeFormModal from './NodeFormModal';
+import NodeXrayModal from './NodeXrayModal';
 import { setMessageInstance } from '@/utils/messageBus';
 import { HttpUtil } from '@/utils';
 import type { PanelUpdateInfo } from '../index/PanelUpdateModal';
@@ -88,6 +89,7 @@ export default function NodesPage() {
     fetchInbounds,
     probe,
     updatePanels,
+    updateXrays,
   } = useNodeMutations();
 
   const { data: latestVersion = '' } = useQuery({
@@ -107,6 +109,10 @@ export default function NodesPage() {
   const [trustCa, setTrustCa] = useState('');
   const [copyingCa, setCopyingCa] = useState(false);
   const [savingTrustCa, setSavingTrustCa] = useState(false);
+  const [xrayModalOpen, setXrayModalOpen] = useState(false);
+  const [xrayTargetIds, setXrayTargetIds] = useState<number[]>([]);
+  const [xrayTargetNames, setXrayTargetNames] = useState<string[]>([]);
+  const [xrayCurrentVersion, setXrayCurrentVersion] = useState<string>('');
 
   const onCopyNodeCa = useCallback(async () => {
     setCopyingCa(true);
@@ -274,6 +280,50 @@ export default function NodesPage() {
     });
   }, [modal, t, nodes, selectedIds, runUpdate, messageApi]);
 
+  const onAdjustXray = useCallback((node: NodeRecord) => {
+    setXrayTargetIds([node.id]);
+    setXrayTargetNames([node.name || `Node ${node.id}`]);
+    setXrayCurrentVersion(node.xrayVersion || '');
+    setXrayModalOpen(true);
+  }, []);
+
+  const onAdjustXraySelected = useCallback(() => {
+    const eligible = nodes.filter(
+      (n) => selectedIds.includes(n.id) && n.enable && n.status === 'online',
+    );
+    if (eligible.length === 0) {
+      messageApi.warning(t('pages.nodes.toasts.updateNoneEligible'));
+      return;
+    }
+    setXrayTargetIds(eligible.map((n) => n.id));
+    setXrayTargetNames(eligible.map((n) => n.name || `Node ${n.id}`));
+    setXrayCurrentVersion(eligible.length === 1 ? eligible[0].xrayVersion || '' : '');
+    setXrayModalOpen(true);
+  }, [nodes, selectedIds, messageApi, t]);
+
+  const runUpdateXrays = useCallback(
+    async (ids: number[], version: string) => {
+      const msg = await updateXrays(ids, version);
+      if (!msg?.success) {
+        messageApi.error(msg?.msg || t('somethingWentWrong'));
+        return;
+      }
+      const results = msg.obj ?? [];
+      const ok = results.filter((r) => r.ok).length;
+      const failed = results.length - ok;
+      if (failed === 0) {
+        messageApi.success(t('pages.nodes.toasts.xrayUpdateStarted'));
+      } else {
+        const firstError = results.find((r) => !r.ok)?.error ?? '';
+        const base = t('pages.nodes.toasts.xrayUpdateResult', { ok, failed });
+        messageApi.warning(firstError ? `${base} — ${firstError}` : base);
+      }
+      setSelectedIds([]);
+      refetch();
+    },
+    [updateXrays, messageApi, t, refetch],
+  );
+
   const pageClass = useMemo(() => {
     const classes = ['nodes-page'];
     if (isDark) classes.push('is-dark');
@@ -361,6 +411,8 @@ export default function NodesPage() {
                       onToggleEnable={onToggleEnable}
                       onUpdateNode={onUpdateNode}
                       onUpdateSelected={onUpdateSelected}
+                      onAdjustXray={onAdjustXray}
+                      onAdjustXraySelected={onAdjustXraySelected}
                     />
                   </Col>
                 </Row>
@@ -378,6 +430,15 @@ export default function NodesPage() {
           fetchInbounds={fetchInbounds}
           save={onSave}
           onOpenChange={setFormOpen}
+        />
+
+        <NodeXrayModal
+          open={xrayModalOpen}
+          targetIds={xrayTargetIds}
+          targetNames={xrayTargetNames}
+          currentVersion={xrayCurrentVersion}
+          onConfirm={runUpdateXrays}
+          onClose={() => setXrayModalOpen(false)}
         />
 
         <Modal

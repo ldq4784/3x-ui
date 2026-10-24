@@ -7,6 +7,7 @@ import {
   ApartmentOutlined,
   ClusterOutlined,
   CloudDownloadOutlined,
+  ControlOutlined,
   DeleteOutlined,
   EditOutlined,
   ExclamationCircleOutlined,
@@ -42,6 +43,8 @@ interface NodeListProps {
   onToggleEnable: (node: NodeRecord, next: boolean) => void;
   onUpdateNode: (node: NodeRecord) => void;
   onUpdateSelected: () => void;
+  onAdjustXray: (node: NodeRecord) => void;
+  onAdjustXraySelected: () => void;
 }
 
 function isUpdateEligible(n: NodeRecord): boolean {
@@ -178,6 +181,8 @@ export default function NodeList({
   onToggleEnable,
   onUpdateNode,
   onUpdateSelected,
+  onAdjustXray,
+  onAdjustXraySelected,
 }: NodeListProps) {
   const { t } = useTranslation();
   const relativeTime = useRelativeTime();
@@ -244,7 +249,7 @@ export default function NodeList({
       {
         title: t('pages.nodes.actions'),
         align: 'center',
-        width: 190,
+        width: 220,
         render: (_value, record) =>
           record.transitive ? (
             <Tooltip
@@ -269,16 +274,28 @@ export default function NodeList({
                 />
               </Tooltip>
               {isUpdateEligible(record) && (
-                <Tooltip title={t('pages.nodes.updatePanel')}>
-                  <Button
-                    type="text"
-                    size="small"
-                    style={{ fontSize: 16 }}
-                    icon={<CloudDownloadOutlined />}
-                    aria-label={t('pages.nodes.updatePanel')}
-                    onClick={() => onUpdateNode(record)}
-                  />
-                </Tooltip>
+                <>
+                  <Tooltip title={t('pages.nodes.updatePanel')}>
+                    <Button
+                      type="text"
+                      size="small"
+                      style={{ fontSize: 16 }}
+                      icon={<CloudDownloadOutlined />}
+                      aria-label={t('pages.nodes.updatePanel')}
+                      onClick={() => onUpdateNode(record)}
+                    />
+                  </Tooltip>
+                  <Tooltip title={t('pages.nodes.adjustXray')}>
+                    <Button
+                      type="text"
+                      size="small"
+                      style={{ fontSize: 16 }}
+                      icon={<ControlOutlined />}
+                      aria-label={t('pages.nodes.adjustXray')}
+                      onClick={() => onAdjustXray(record)}
+                    />
+                  </Tooltip>
+                </>
               )}
               <Tooltip title={t('edit')}>
                 <Button
@@ -416,7 +433,26 @@ export default function NodeList({
         title: t('pages.nodes.xrayVersion'),
         dataIndex: 'xrayVersion',
         align: 'center',
-        render: (_value, record) => record.xrayVersion || '-',
+        render: (_value, record) => {
+          if (!isUpdateEligible(record)) {
+            return record.xrayVersion || '-';
+          }
+          return (
+            <Tooltip title={t('pages.nodes.adjustXray')}>
+              <Tag
+                color="blue"
+                style={{ cursor: 'pointer', margin: 0 }}
+                role="button"
+                tabIndex={0}
+                onClick={() => onAdjustXray(record)}
+                onKeyDown={activateOnKey(() => onAdjustXray(record))}
+              >
+                <ControlOutlined style={{ marginInlineEnd: 4 }} />
+                {record.xrayVersion || '-'}
+              </Tag>
+            </Tooltip>
+          );
+        },
       },
       {
         title: t('pages.nodes.panelVersion') || 'Panel version',
@@ -531,6 +567,7 @@ export default function NodeList({
       onEdit,
       onDelete,
       onUpdateNode,
+      onAdjustXray,
       nameByGuid,
     ],
   );
@@ -586,9 +623,14 @@ export default function NodeList({
           {t('pages.nodes.mtls.title')}
         </Button>
         {selectedIds.length > 0 && (
-          <Button icon={<CloudDownloadOutlined />} onClick={onUpdateSelected}>
-            {t('pages.nodes.updateSelected', { count: selectedIds.length })}
-          </Button>
+          <>
+            <Button icon={<CloudDownloadOutlined />} onClick={onUpdateSelected}>
+              {t('pages.nodes.updateSelected', { count: selectedIds.length })}
+            </Button>
+            <Button icon={<ControlOutlined />} onClick={onAdjustXraySelected}>
+              {t('pages.nodes.adjustXraySelected', { count: selectedIds.length })}
+            </Button>
+          </>
         )}
       </div>
 
@@ -679,6 +721,15 @@ export default function NodeList({
                                         </>
                                       ),
                                       onClick: () => onUpdateNode(record),
+                                    },
+                                    {
+                                      key: 'adjust-xray',
+                                      label: (
+                                        <>
+                                          <ControlOutlined /> {t('pages.nodes.adjustXray')}
+                                        </>
+                                      ),
+                                      onClick: () => onAdjustXray(record),
                                     },
                                   ]
                                 : []),

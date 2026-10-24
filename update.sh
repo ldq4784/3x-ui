@@ -604,9 +604,23 @@ update_x-ui() {
         rm ${xui_folder}/x-ui.service.rhel -f > /dev/null 2>&1
         rm ${xui_folder}/x-ui -f > /dev/null 2>&1
         rm ${xui_folder}/x-ui.sh -f > /dev/null 2>&1
+        # Back up existing Xray binary so panel updates do not unintentionally overwrite
+        # a customized or downgraded Xray version.
+        local existing_xray=""
+        local xray_backup_temp=""
+        for xf in "${xui_folder}/bin"/xray-linux-*; do
+            if [[ -f "$xf" && -x "$xf" ]]; then
+                existing_xray="$xf"
+                break
+            fi
+        done
+        if [[ -n "$existing_xray" ]]; then
+            xray_backup_temp=$(mktemp /tmp/xray-preserve-XXXXXX 2>/dev/null || echo "/tmp/xray-preserve.$$.bak")
+            cp -a "$existing_xray" "$xray_backup_temp"
+            echo -e "${green}Preserving current Xray core binary ($(basename "$existing_xray"))...${plain}"
+        fi
         echo -e "${green}Removing old mtg version...${plain}"
         rm ${xui_folder}/bin/mtg-linux-$(arch) -f > /dev/null 2>&1
-        echo -e "${green}Removing old xray version...${plain}"
         rm ${xui_folder}/bin/xray-linux-$(arch) -f > /dev/null 2>&1
         echo -e "${green}Removing old README and LICENSE file...${plain}"
         rm ${xui_folder}/bin/README.md -f > /dev/null 2>&1
@@ -648,6 +662,17 @@ update_x-ui() {
         chmod +x bin/mtg-linux-arm > /dev/null 2>&1
     elif [[ -f bin/mtg-linux-$(arch) ]]; then
         chmod +x bin/mtg-linux-$(arch) > /dev/null 2>&1
+    fi
+
+    # Restore preserved Xray binary if one existed
+    if [[ -n "$xray_backup_temp" && -f "$xray_backup_temp" ]]; then
+        local target_xray_name
+        target_xray_name=$(basename "$existing_xray")
+        echo -e "${green}Restoring preserved Xray core binary ($target_xray_name)...${plain}"
+        rm -f bin/xray-linux-*
+        cp -a "$xray_backup_temp" "bin/${target_xray_name}"
+        chmod +x "bin/${target_xray_name}"
+        rm -f "$xray_backup_temp"
     fi
 
     echo -e "${green}Downloading and installing x-ui.sh script...${plain}"

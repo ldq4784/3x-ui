@@ -1132,7 +1132,9 @@
         "updateResult": "已在 {ok} 個節點上觸發更新，{failed} 個失敗",
         "updateNoneEligible": "請至少選擇一個在線且已啟用的節點",
         "saveMtls": "儲存節點 mTLS",
-        "reloadMtls": "Reload master mTLS credential"
+        "reloadMtls": "Reload master mTLS credential",
+        "xrayUpdateStarted": "已開始調整 Xray 版本",
+        "xrayUpdateResult": "已在 {ok} 個節點上調整 Xray，{failed} 個失敗"
       },
       "tlsVerifyMode": "TLS 驗證",
       "tlsVerifyModeHint": "面板如何驗證節點的 HTTPS 憑證。釘選或略過用於自簽憑證（僅 https 節點）。",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "base64 或 hex 的 SHA-256",
       "fetchPin": "取得",
       "pinFetched": "已取得節點目前憑證",
-      "pinFetchFailed": "無法取得憑證"
+      "pinFetchFailed": "無法取得憑證",
+      "adjustXray": "調整 Xray 版本",
+      "adjustXraySelected": "調整 Xray ({count})",
+      "adjustXrayTitle": "調整 Xray 版本",
+      "selectXrayVersion": "選擇目標 Xray 版本",
+      "adjustXrayNotice": "切換版本時，目標節點將下載對應核心並重啟 Xray 服務。"
     },
     "settings": {
       "defaultTag": "預設",

@@ -1132,7 +1132,9 @@
         "updateResult": "تم بدء التحديث على {ok} عقدة، فشل {failed}",
         "updateNoneEligible": "اختر عقدة واحدة على الأقل متصلة ومفعّلة",
         "saveMtls": "حفظ mTLS النود",
-        "reloadMtls": "Reload master mTLS credential"
+        "reloadMtls": "Reload master mTLS credential",
+        "xrayUpdateStarted": "Xray version switch initiated",
+        "xrayUpdateResult": "Xray adjusted on {ok} nodes, {failed} failed"
       },
       "tlsVerifyMode": "التحقق من TLS",
       "tlsVerifyModeHint": "كيف يتحقق اللوحة من شهادة HTTPS الخاصة بالعقدة. التثبيت أو التخطّي مخصّصان للشهادات الموقّعة ذاتيًا (عُقد https فقط).",
@@ -1160,7 +1162,12 @@
       "pinnedCertPlaceholder": "SHA-256 بصيغة base64 أو hex",
       "fetchPin": "جلب",
       "pinFetched": "تم جلب شهادة العقدة الحالية",
-      "pinFetchFailed": "تعذّر جلب الشهادة"
+      "pinFetchFailed": "تعذّر جلب الشهادة",
+      "adjustXray": "Adjust Xray version",
+      "adjustXraySelected": "Adjust Xray ({count})",
+      "adjustXrayTitle": "Adjust Xray Version",
+      "selectXrayVersion": "Select target Xray version",
+      "adjustXrayNotice": "When switching versions, the target node will download the core and restart the Xray service."
     },
     "settings": {
       "defaultTag": "افتراضي",

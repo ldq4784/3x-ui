@@ -364,6 +364,7 @@ var remoteMethodsOutsideContract = map[string]string{
 	"AdvancePushedInbound":  "local fingerprint bookkeeping",
 	"ForgetPushedInbound":   "local fingerprint bookkeeping",
 	"UpdatePanel":           "replaces the node binary; node-sync is denied it on purpose (#6201)",
+	"InstallXray":           "updates the node xray binary; node-sync is denied it on purpose",
 }
 
 // A Remote method with no cell is how activeInbounds and bulkResetTraffic

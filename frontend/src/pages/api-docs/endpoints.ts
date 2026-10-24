@@ -1777,6 +1777,15 @@ export const sections: readonly Section[] = [
           '{\n  "success": true,\n  "obj": [\n    { "id": 1, "name": "de-1", "ok": true },\n    { "id": 2, "name": "fr-1", "ok": false, "error": "node is offline" }\n  ]\n}',
       },
       {
+        method: 'POST',
+        path: '/panel/api/nodes/updateXray',
+        summary:
+          'Trigger an Xray core installation/switch on each given node. Downloads and installs the requested version, then restarts the Xray core service. Returns a per-node result list.',
+        body: '{\n  "ids": [1, 2, 3],\n  "version": "v26.1.18"\n}',
+        response:
+          '{\n  "success": true,\n  "obj": [\n    { "id": 1, "name": "de-1", "ok": true },\n    { "id": 2, "name": "fr-1", "ok": false, "error": "node is offline" }\n  ]\n}',
+      },
+      {
         method: 'GET',
         path: '/panel/api/nodes/history/:id/:metric/:bucket',
         summary:
