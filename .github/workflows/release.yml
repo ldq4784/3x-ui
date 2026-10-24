@@ -23,10 +23,29 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
+        run: |
+          if ! command -v go >/dev/null 2>&1; then
+            for go_dir in "/usr/local/go/bin" "/usr/bin" "/root/go/bin" "$HOME/go/bin"; do
+              if [ -x "$go_dir/go" ]; then
+                echo "$go_dir" >> $GITHUB_PATH
+                export PATH="$go_dir:$PATH"
+                break
+              fi
+            done
+            if ! command -v go >/dev/null 2>&1; then
+              RUNNER_TOOL_GO=$(find /root/actions-runner/_work/_tool/go "$HOME/actions-runner/_work/_tool/go" -name go -type f -perm -111 2>/dev/null | sort -V | tail -n1)
+              if [ -n "$RUNNER_TOOL_GO" ]; then
+                GO_BIN=$(dirname "$RUNNER_TOOL_GO")
+                echo "$GO_BIN" >> $GITHUB_PATH
+                export PATH="$GO_BIN:$PATH"
+              fi
+            fi
+          fi
+          if ! command -v go >/dev/null 2>&1; then
+            echo "ERROR: Go not found on system" >&2
+            exit 1
+          fi
+          echo "Using Go: $(which go) ($(go version))"
 
       # Frontend dist must be built BEFORE go build — Go's //go:embed
       # all:dist directive in internal/web/web.go requires internal/web/dist/ to exist
@@ -179,10 +198,29 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
+        run: |
+          if ! command -v go >/dev/null 2>&1; then
+            for go_dir in "/usr/local/go/bin" "/usr/bin" "/root/go/bin" "$HOME/go/bin"; do
+              if [ -x "$go_dir/go" ]; then
+                echo "$go_dir" >> $GITHUB_PATH
+                export PATH="$go_dir:$PATH"
+                break
+              fi
+            done
+            if ! command -v go >/dev/null 2>&1; then
+              RUNNER_TOOL_GO=$(find /root/actions-runner/_work/_tool/go "$HOME/actions-runner/_work/_tool/go" -name go -type f -perm -111 2>/dev/null | sort -V | tail -n1)
+              if [ -n "$RUNNER_TOOL_GO" ]; then
+                GO_BIN=$(dirname "$RUNNER_TOOL_GO")
+                echo "$GO_BIN" >> $GITHUB_PATH
+                export PATH="$GO_BIN:$PATH"
+              fi
+            fi
+          fi
+          if ! command -v go >/dev/null 2>&1; then
+            echo "ERROR: Go not found on system" >&2
+            exit 1
+          fi
+          echo "Using Go: $(which go) ($(go version))"
 
       - name: Setup Node.js
         run: |
