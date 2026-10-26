@@ -12112,6 +12112,70 @@
         }
       }
     },
+    "/panel/api/nodes/updateXray": {
+      "post": {
+        "tags": [
+          "Nodes"
+        ],
+        "summary": "Trigger an Xray core installation/switch on each given node. Downloads and installs the requested version, then restarts the Xray core service. Returns a per-node result list.",
+        "operationId": "post_panel_api_nodes_updateXray",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "example": {
+                "ids": [
+                  1,
+                  2,
+                  3
+                ],
+                "version": "v26.1.18"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": [
+                    {
+                      "id": 1,
+                      "name": "de-1",
+                      "ok": true
+                    },
+                    {
+                      "id": 2,
+                      "name": "fr-1",
+                      "ok": false,
+                      "error": "node is offline"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/panel/api/nodes/history/{id}/{metric}/{bucket}": {
       "get": {
         "tags": [
