@@ -97,6 +97,7 @@ export default function NodeXrayModal({
             style={{ width: '100%' }}
             showSearch
             loading={isLoading}
+            aria-label={t('pages.nodes.selectXrayVersion')}
             placeholder={t('pages.nodes.selectXrayVersion')}
             value={selectedVersion || undefined}
             onChange={setUserSelectedVersion}

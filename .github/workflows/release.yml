@@ -99,7 +99,6 @@ jobs:
           XRAY_VER=$(curl -sf $CURL_RETRY -o /dev/null -w '%{redirect_url}' "https://github.com/XTLS/Xray-core/releases/latest" | sed -n 's#.*/releases/tag/##p')
           XRAY_VER=${XRAY_VER:-v26.10.21}
           Xray_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/"
-
           if [ "${{ matrix.platform }}" == "amd64" ]; then
             fetch "${Xray_URL}Xray-linux-64.zip"
             unzip -q Xray-linux-64.zip
