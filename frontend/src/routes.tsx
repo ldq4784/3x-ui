@@ -37,6 +37,12 @@ export const routes: RouteObject[] = [
   },
 ];
 
+function computeBasename() {
+  const raw = (typeof window !== 'undefined' && window.X_UI_BASE_PATH) || '/';
+  const trimmed = raw.replace(/\/+$/, '');
+  return `${trimmed}/panel`;
+}
+
 export const router = createBrowserRouter(routes, {
-  basename: window.basePath,
+  basename: computeBasename(),
 });
