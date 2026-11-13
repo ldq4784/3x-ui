@@ -10636,6 +10636,59 @@
         }
       }
     },
+    "/panel/api/clients/ipLocations": {
+      "post": {
+        "tags": [
+          "Clients"
+        ],
+        "summary": "Resolve concise city and ISP labels (e.g. \"北京移动\") for a batch of client IP addresses via ip-api.",
+        "operationId": "post_panel_api_clients_ipLocations",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "example": {
+                "ips": [
+                  "221.6.10.213",
+                  "14.154.206.197"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": {
+                    "221.6.10.213": "苏州联通",
+                    "14.154.206.197": "深圳电信"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/panel/api/clients/clearIps/{email}": {
       "post": {
         "tags": [

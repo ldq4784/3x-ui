@@ -84,6 +84,7 @@ func (a *ClientController) initRouter(g *gin.RouterGroup) {
 	g.POST("/resetTraffic/:email", a.resetTrafficByEmail)
 	g.POST("/updateTraffic/:email", a.updateTrafficByEmail)
 	g.POST("/ips/:email", a.getIps)
+	g.POST("/ipLocations", a.getIpLocations)
 	g.POST("/clearIps/:email", a.clearIps)
 	g.POST("/hwids/:email", a.getHwids)
 	g.DELETE("/hwids/:email", a.clearHwids)
@@ -603,6 +604,20 @@ func (a *ClientController) getIps(c *gin.Context) {
 	email := c.Param("email")
 	infos, err := a.inboundService.GetClientIpsWithNodes(email)
 	jsonObj(c, infos, err)
+}
+
+type ipLocationsRequest struct {
+	IPs []string `json:"ips" form:"ips"`
+}
+
+func (a *ClientController) getIpLocations(c *gin.Context) {
+	var req ipLocationsRequest
+	if err := c.ShouldBind(&req); err != nil && !strings.Contains(err.Error(), "EOF") {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	locations := service.DefaultIpLocationService().LookupLocations(req.IPs)
+	jsonObj(c, locations, nil)
 }
 
 func (a *ClientController) clientIpsByGuid(c *gin.Context) {

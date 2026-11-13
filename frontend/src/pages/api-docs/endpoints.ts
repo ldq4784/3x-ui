@@ -1573,6 +1573,15 @@ export const sections: readonly Section[] = [
       },
       {
         method: 'POST',
+        path: '/panel/api/clients/ipLocations',
+        summary:
+          'Resolve concise city and ISP labels (e.g. "北京移动") for a batch of client IP addresses via ip-api.',
+        body: '{\n  "ips": ["221.6.10.213", "14.154.206.197"]\n}',
+        response:
+          '{\n  "success": true,\n  "obj": {\n    "221.6.10.213": "苏州联通",\n    "14.154.206.197": "深圳电信"\n  }\n}',
+      },
+      {
+        method: 'POST',
         path: '/panel/api/clients/clearIps/:email',
         summary: 'Reset the recorded IP list for a client.',
         params: [{ name: 'email', in: 'path', type: 'string', desc: 'Client email.' }],

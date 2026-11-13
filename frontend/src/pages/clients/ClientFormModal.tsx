@@ -14,7 +14,6 @@ import {
   Space,
   Switch,
   Tabs,
-  Tag,
   Tooltip,
   Typography,
   message,
@@ -30,17 +29,18 @@ import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import { Controller, FormProvider, useForm, useWatch, useFieldArray } from 'react-hook-form';
 
-import { HttpUtil, IntlUtil, RandomUtil, Wireguard } from '@/utils';
+import { IntlUtil, RandomUtil, Wireguard } from '@/utils';
 import { formatInboundLabel } from '@/lib/inbounds/label';
 import { generateMtprotoSecret } from '@/lib/xray/inbound-defaults';
-import { normalizeClientIps, type ClientIpInfo } from '@/lib/clients/ip-log';
 import { resolveExternalLinkExpiry } from '@/lib/clients/external-link';
 import { useDatepicker } from '@/hooks/useDatepicker';
 import { useClientHwids } from '@/hooks/useClientHwids';
+import { useClientIps } from '@/hooks/useClientIps';
 import { useRawHostsQuery } from '@/api/queries/useRawHostsQuery';
 import { DateTimePicker, SelectAllClearButtons } from '@/components/form';
 import { FormField, rhfZodValidate } from '@/components/form/rhf';
 import ClientHwidListModal from '@/components/clients/ClientHwidList';
+import ClientIpLogModal from '@/components/clients/ClientIpLogModal';
 import { TLS_FLOW_CONTROL, TRAFFIC_RESETS } from '@/schemas/primitives';
 import {
   OptionalAmneziaWGKeepAliveInputSchema,
@@ -294,10 +294,17 @@ export default function ClientFormModal({
 
   const [submitting, setSubmitting] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [clientIps, setClientIps] = useState<ClientIpInfo[]>([]);
-  const [ipsLoading, setIpsLoading] = useState(false);
-  const [ipsClearing, setIpsClearing] = useState(false);
   const [ipsModalOpen, setIpsModalOpen] = useState(false);
+  const {
+    clientIps,
+    ipsLoading,
+    ipsClearing,
+    ipLocations,
+    locationsLoading,
+    loadIps,
+    clearIps,
+    resetIps,
+  } = useClientIps(isEdit ? client?.email : undefined, ipsModalOpen);
   const {
     clientHwids,
     hwidsLoading,
@@ -350,7 +357,10 @@ export default function ClientFormModal({
   }
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      resetIps();
+      return;
+    }
     setIpsModalOpen(false);
     setHwidsModalOpen(false);
 
@@ -419,6 +429,7 @@ export default function ClientFormModal({
       void loadIps();
       void loadHwids();
     } else {
+      resetIps();
       const wgKeypair = Wireguard.generateKeypair();
       methods.reset({
         ...EMPTY,
@@ -653,39 +664,9 @@ export default function ClientFormModal({
     .map((field, index) => ({ field, index }))
     .filter((row) => row.field.kind === 'subscription');
 
-  async function loadIps() {
-    if (!isEdit || !client?.email) return;
-    setIpsLoading(true);
-    try {
-      const msg = (await HttpUtil.post(
-        `/panel/api/clients/ips/${encodeURIComponent(client.email)}`,
-      )) as ApiMsg<unknown[]>;
-      if (!msg?.success) {
-        setClientIps([]);
-        return;
-      }
-      setClientIps(normalizeClientIps(msg.obj));
-    } finally {
-      setIpsLoading(false);
-    }
-  }
-
   function openIpsModal() {
     setIpsModalOpen(true);
     if (clientIps.length === 0) void loadIps();
-  }
-
-  async function clearIps() {
-    if (!isEdit || !client?.email) return;
-    setIpsClearing(true);
-    try {
-      const msg = (await HttpUtil.post(
-        `/panel/api/clients/clearIps/${encodeURIComponent(client.email)}`,
-      )) as ApiMsg;
-      if (msg?.success) setClientIps([]);
-    } finally {
-      setIpsClearing(false);
-    }
   }
 
   function openHwidsModal() {
@@ -1714,64 +1695,19 @@ export default function ClientFormModal({
         </FormProvider>
       </Modal>
 
-      <Modal
+      <ClientIpLogModal
         open={ipsModalOpen}
         title={`${t('pages.clients.ipLog')}${client?.email ? ` — ${client.email}` : ''}`}
-        width={440}
         zIndex={CLIENT_IP_LOG_MODAL_Z_INDEX}
-        onCancel={() => setIpsModalOpen(false)}
-        footer={[
-          <Button
-            key="refresh"
-            icon={<ReloadOutlined aria-hidden />}
-            loading={ipsLoading}
-            onClick={loadIps}
-          >
-            {t('refresh')}
-          </Button>,
-          <Button
-            key="clear"
-            danger
-            loading={ipsClearing}
-            disabled={clientIps.length === 0}
-            onClick={clearIps}
-          >
-            {t('pages.clients.clearAll')}
-          </Button>,
-          <Button key="close" type="primary" onClick={() => setIpsModalOpen(false)}>
-            {t('close')}
-          </Button>,
-        ]}
-      >
-        {clientIps.length > 0 ? (
-          <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-            {clientIps.map((entry, idx) => (
-              <Tag
-                key={idx}
-                color="blue"
-                style={{
-                  display: 'block',
-                  width: 'fit-content',
-                  maxWidth: '100%',
-                  marginBottom: 6,
-                  padding: '2px 8px',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                }}
-              >
-                {entry.ip}
-                {entry.time ? ` (${entry.time})` : ''}
-                {entry.node ? (
-                  <span style={{ marginInlineStart: 6, opacity: 0.85, fontWeight: 600 }}>
-                    @ {entry.node}
-                  </span>
-                ) : null}
-              </Tag>
-            ))}
-          </div>
-        ) : (
-          <Tag>{t('tgbot.noIpRecord')}</Tag>
-        )}
-      </Modal>
+        clientIps={clientIps}
+        ipLocations={ipLocations}
+        loading={ipsLoading}
+        locationsLoading={locationsLoading}
+        clearing={ipsClearing}
+        onRefresh={() => void loadIps()}
+        onClearAll={() => void clearIps()}
+        onClose={() => setIpsModalOpen(false)}
+      />
 
       <ClientHwidListModal
         open={hwidsModalOpen}
