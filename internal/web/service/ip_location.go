@@ -484,6 +484,14 @@ func formatCityName(res ipApiResponse) string {
 	case "SG":
 		return "新加坡"
 	case "CN", "TW":
+		if cc == "CN" {
+			if mun := chineseMunicipalityName(region); mun != "" {
+				return mun
+			}
+			if mun := chineseMunicipalityName(city); mun != "" {
+				return mun
+			}
+		}
 		if city != "" {
 			return trimChineseCitySuffix(city, cc == "TW")
 		}
@@ -545,6 +553,21 @@ func trimChineseRegionSuffix(region string) string {
 		}
 	}
 	return region
+}
+
+func chineseMunicipalityName(region string) string {
+	switch strings.ToLower(strings.TrimSpace(region)) {
+	case "北京", "北京市", "beijing", "beijing municipality":
+		return "北京"
+	case "上海", "上海市", "shanghai", "shanghai municipality":
+		return "上海"
+	case "天津", "天津市", "tianjin", "tianjin municipality":
+		return "天津"
+	case "重庆", "重庆市", "重慶", "重慶市", "chongqing", "chongqing municipality":
+		return "重庆"
+	default:
+		return ""
+	}
 }
 
 var mobileASNs = map[string]bool{

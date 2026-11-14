@@ -55,6 +55,58 @@ func TestFormatIpLocation(t *testing.T) {
 			want: "深圳电信",
 		},
 		{
+			name: "Beijing district Jinrongjie collapses to Beijing",
+			res: ipApiResponse{
+				Status:      "success",
+				Country:     "中国",
+				CountryCode: "CN",
+				RegionName:  "北京市",
+				City:        "金融街",
+				ISP:         "China Unicom Network",
+				AS:          "AS17816 China Unicom IP network China169 Guangdong province",
+			},
+			want: "北京联通",
+		},
+		{
+			name: "Shanghai district Lujiazui collapses to Shanghai",
+			res: ipApiResponse{
+				Status:      "success",
+				Country:     "中国",
+				CountryCode: "CN",
+				RegionName:  "上海市",
+				City:        "陆家嘴",
+				ISP:         "Chinanet",
+				AS:          "AS4812 China Telecom (Group)",
+			},
+			want: "上海电信",
+		},
+		{
+			name: "Tianjin district collapses to Tianjin",
+			res: ipApiResponse{
+				Status:      "success",
+				Country:     "中国",
+				CountryCode: "CN",
+				RegionName:  "天津市",
+				City:        "和平区",
+				ISP:         "China Mobile",
+				AS:          "AS56047 China Mobile",
+			},
+			want: "天津移动",
+		},
+		{
+			name: "Chongqing district collapses to Chongqing",
+			res: ipApiResponse{
+				Status:      "success",
+				Country:     "中国",
+				CountryCode: "CN",
+				RegionName:  "重庆市",
+				City:        "渝中区",
+				ISP:         "Chinanet",
+				AS:          "AS4134 CHINANET-BACKBONE",
+			},
+			want: "重庆电信",
+		},
+		{
 			name: "Taipei Chunghwa Telecom",
 			res: ipApiResponse{
 				Status:      "success",
