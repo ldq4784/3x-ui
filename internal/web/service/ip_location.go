@@ -22,15 +22,23 @@ import (
 )
 
 const (
-	ipApiDefaultBaseURL        = "http://ip-api.com"
-	ipApiFieldsParam           = "status,country,countryCode,regionName,city,isp,org,as,query"
-	ipLocationCacheTTL         = 24 * time.Hour
-	ipLocationMaxCacheEntries  = 4096
-	ipLocationRequestTimeout   = 4 * time.Second
-	ipLocationBatchLimit       = 100
-	ipLocationRateLimitDefault = 30 * time.Second
-	ipLocationMaxInputIPs      = 500
-	ipApiMaxResponseBytes      = 512 << 10
+	ipApiDefaultBaseURL         = "http://ip-api.com"
+	bilibiliDefaultBaseURL      = "https://api.live.bilibili.com"
+	ipinfoDefaultBaseURL        = "https://ipinfo.io"
+	ipApiFieldsParam            = "status,country,countryCode,regionName,city,isp,org,as,query"
+	ipLocationCacheTTL          = 24 * time.Hour
+	ipLocationMaxCacheEntries   = 4096
+	ipLocationRequestTimeout    = 4 * time.Second
+	ipLocationCalibrateTimeout  = 5 * time.Second
+	ipLocationCalibrateSubLimit = 2500 * time.Millisecond
+	ipLocationCalibrateWorkers  = 5
+	ipLocationCalibrateLimit    = 40
+	ipLocationFallbackLimit     = 20
+	ipLocationBatchLimit        = 100
+	ipLocationRateLimitDefault  = 30 * time.Second
+	bilibiliRateLimitDefault    = 60 * time.Second
+	ipLocationMaxInputIPs       = 500
+	ipApiMaxResponseBytes       = 512 << 10
 )
 
 var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
@@ -47,22 +55,48 @@ type ipApiResponse struct {
 	Query       string `json:"query"`
 }
 
+type bilibiliIpResponse struct {
+	Code int            `json:"code"`
+	Data bilibiliIpData `json:"data"`
+}
+
+type bilibiliIpData struct {
+	Addr     string `json:"addr"`
+	Country  string `json:"country"`
+	Province string `json:"province"`
+	City     string `json:"city"`
+	ISP      string `json:"isp"`
+}
+
+type ipInfoResponse struct {
+	IP      string `json:"ip"`
+	City    string `json:"city"`
+	Region  string `json:"region"`
+	Country string `json:"country"`
+	Org     string `json:"org"`
+}
+
 type ipLocationCacheEntry struct {
 	location  string
 	expiresAt time.Time
 }
 
-// IpLocationService resolves public client IPs into concise "city + ISP" labels
-// via ip-api.com with bounded in-memory caching and rate-limit backoff.
+// IpLocationService resolves public client IPs into concise "city + ISP" labels.
+// It uses ip-api.com as the primary/overseas batch source and calibrates Chinese
+// mainland IPs via Bilibili and ipinfo.io with bounded in-memory caching.
 type IpLocationService struct {
-	mu            sync.RWMutex
-	cache         map[string]ipLocationCacheEntry
-	order         []string
-	group         singleflight.Group
-	cooldownUntil time.Time
-	httpClient    *http.Client
-	apiBaseURL    string
-	nowFn         func() time.Time
+	mu                  sync.RWMutex
+	cache               map[string]ipLocationCacheEntry
+	order               []string
+	group               singleflight.Group
+	cooldownUntil       time.Time
+	bilibiliCooldown    time.Time
+	ipinfoCooldown      time.Time
+	httpClient          *http.Client
+	apiBaseURL          string
+	bilibiliBaseURL     string
+	ipinfoBaseURL       string
+	nowFn               func() time.Time
 }
 
 var defaultIpLocationService = newIpLocationService()
@@ -99,6 +133,46 @@ func (s *IpLocationService) baseURL() string {
 		return strings.TrimRight(s.apiBaseURL, "/")
 	}
 	return ipApiDefaultBaseURL
+}
+
+func (s *IpLocationService) isCustomApiURL() bool {
+	return s.apiBaseURL != "" && s.apiBaseURL != ipApiDefaultBaseURL
+}
+
+func (s *IpLocationService) bilibiliURL() string {
+	if s.bilibiliBaseURL != "" {
+		if s.bilibiliBaseURL == "-" {
+			return ""
+		}
+		return strings.TrimRight(s.bilibiliBaseURL, "/")
+	}
+	if s.isCustomApiURL() {
+		return ""
+	}
+	return bilibiliDefaultBaseURL
+}
+
+func (s *IpLocationService) ipinfoURL() string {
+	if s.ipinfoBaseURL != "" {
+		if s.ipinfoBaseURL == "-" {
+			return ""
+		}
+		return strings.TrimRight(s.ipinfoBaseURL, "/")
+	}
+	if s.isCustomApiURL() {
+		return ""
+	}
+	return ipinfoDefaultBaseURL
+}
+
+func (s *IpLocationService) hasActiveSource(now time.Time) bool {
+	if !now.Before(s.cooldownUntil) {
+		return true
+	}
+	if s.ipinfoURL() != "" && !now.Before(s.ipinfoCooldown) {
+		return true
+	}
+	return s.bilibiliURL() != "" && !now.Before(s.bilibiliCooldown)
 }
 
 // GetCachedLocations returns cached or local labels for ips without making
@@ -169,7 +243,7 @@ func (s *IpLocationService) LookupLocations(ips []string) map[string]string {
 			missing = append(missing, canonical)
 		}
 	}
-	inCooldown := now.Before(s.cooldownUntil)
+	inCooldown := !s.hasActiveSource(now)
 	s.mu.RUnlock()
 
 	if len(missing) == 0 || inCooldown {
@@ -205,7 +279,7 @@ func (s *IpLocationService) filterUncached(canonicals []string) []string {
 	now := s.now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if now.Before(s.cooldownUntil) {
+	if !s.hasActiveSource(now) {
 		return nil
 	}
 	out := make([]string, 0, len(canonicals))
@@ -219,35 +293,211 @@ func (s *IpLocationService) filterUncached(canonicals []string) []string {
 }
 
 func (s *IpLocationService) fetchAndCache(canonicals []string) {
+	primary := s.fetchPrimaryIpApi(canonicals)
+	resolved := make(map[string]string, len(canonicals))
+
+	var cnTargets []string
+	var fallbackTargets []string
+	for _, ip := range canonicals {
+		if res, ok := primary[ip]; ok {
+			if loc := FormatIpLocation(res); loc != "" {
+				resolved[ip] = loc
+			}
+			if strings.EqualFold(strings.TrimSpace(res.CountryCode), "CN") {
+				cnTargets = append(cnTargets, ip)
+			} else if resolved[ip] == "" {
+				fallbackTargets = append(fallbackTargets, ip)
+			}
+			continue
+		}
+		fallbackTargets = append(fallbackTargets, ip)
+	}
+
+	s.calibrateAndFallback(resolved, primary, cnTargets, fallbackTargets)
+	if len(resolved) > 0 {
+		s.putCache(resolved)
+	}
+}
+
+func (s *IpLocationService) fetchPrimaryIpApi(canonicals []string) map[string]ipApiResponse {
+	s.mu.RLock()
+	inCooldown := s.now().Before(s.cooldownUntil)
+	s.mu.RUnlock()
+	if inCooldown || len(canonicals) == 0 {
+		return nil
+	}
+
+	raw := make(map[string]ipApiResponse, len(canonicals))
 	if len(canonicals) == 1 {
 		res, rateLimited, err := s.fetchSingle(canonicals[0])
 		if rateLimited {
-			return
+			return nil
 		}
 		if err != nil {
 			logger.Warningf("ip-api single lookup failed for %s: %v", canonicals[0], err)
-			return
+			return nil
 		}
-		if loc := FormatIpLocation(res); loc != "" {
-			s.putCache(map[string]string{canonicals[0]: loc})
+		if res.Status == "" || res.Status == "success" {
+			raw[canonicals[0]] = res
 		}
-		return
+		return raw
 	}
 
 	for start := 0; start < len(canonicals); start += ipLocationBatchLimit {
 		end := min(start+ipLocationBatchLimit, len(canonicals))
 		chunk := canonicals[start:end]
-		resolved, rateLimited, err := s.fetchBatch(chunk)
-		if len(resolved) > 0 {
-			s.putCache(resolved)
+		items, rateLimited, err := s.fetchBatchRaw(chunk)
+		for ip, res := range items {
+			raw[ip] = res
 		}
 		if rateLimited {
-			return
+			break
 		}
 		if err != nil {
 			logger.Warningf("ip-api batch lookup failed (%d IPs): %v", len(chunk), err)
 		}
 	}
+	return raw
+}
+
+func (s *IpLocationService) calibrateAndFallback(
+	resolved map[string]string,
+	primary map[string]ipApiResponse,
+	cnTargets []string,
+	fallbackTargets []string,
+) {
+	if s.bilibiliURL() == "" && s.ipinfoURL() == "" {
+		return
+	}
+
+	type calibrateTask struct {
+		ip   string
+		isCN bool
+	}
+	maxCN := min(len(cnTargets), ipLocationCalibrateLimit)
+	maxFallback := min(len(fallbackTargets), ipLocationFallbackLimit)
+	tasks := make([]calibrateTask, 0, maxCN+maxFallback)
+	for _, ip := range cnTargets[:maxCN] {
+		tasks = append(tasks, calibrateTask{ip: ip, isCN: true})
+	}
+	for _, ip := range fallbackTargets[:maxFallback] {
+		tasks = append(tasks, calibrateTask{ip: ip, isCN: false})
+	}
+	if len(tasks) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), ipLocationCalibrateTimeout)
+	defer cancel()
+
+	results := make([]string, len(tasks))
+	jobs := make(chan int, len(tasks))
+	for i := range tasks {
+		jobs <- i
+	}
+	close(jobs)
+
+	workers := min(ipLocationCalibrateWorkers, len(tasks))
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				t := tasks[idx]
+				var primaryPtr *ipApiResponse
+				if res, ok := primary[t.ip]; ok {
+					primaryPtr = &res
+				}
+				results[idx] = s.resolveCalibrated(ctx, t.ip, primaryPtr, t.isCN)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i, t := range tasks {
+		if results[i] != "" {
+			resolved[t.ip] = results[i]
+		}
+	}
+}
+
+func (s *IpLocationService) resolveCalibrated(ctx context.Context, ip string, primary *ipApiResponse, isCN bool) string {
+	if isCN {
+		if loc := s.lookupBilibiliLocation(ctx, ip, primary); loc != "" {
+			return loc
+		}
+		if info, err := s.fetchIpInfo(ctx, ip); err == nil {
+			if shouldUseIpInfoFallback(primary, info) {
+				if loc := FormatIpInfoLocation(info); loc != "" {
+					return loc
+				}
+			}
+		}
+		return ""
+	}
+
+	if info, err := s.fetchIpInfo(ctx, ip); err == nil {
+		if strings.EqualFold(strings.TrimSpace(info.Country), "CN") {
+			if loc := s.lookupBilibiliLocation(ctx, ip, primary); loc != "" {
+				return loc
+			}
+		}
+		if loc := FormatIpInfoLocation(info); loc != "" {
+			return loc
+		}
+	}
+
+	if looksLikeCNIP(ip) {
+		return s.lookupBilibiliLocation(ctx, ip, primary)
+	}
+	return ""
+}
+
+func shouldUseIpInfoFallback(primary *ipApiResponse, info ipInfoResponse) bool {
+	if primary == nil || strings.TrimSpace(primary.City) == "" {
+		return true
+	}
+	// If ip-api mapped a CN IP to a direct-controlled municipality (e.g. Unicom HQ in Beijing)
+	// while ipinfo disagrees on the province, prefer ipinfo's location.
+	if pMun := chineseMunicipalityName(primary.RegionName); pMun != "" {
+		infoCityZh := translateEnCityName("CN", info.City)
+		infoMun := chineseMunicipalityName(info.Region)
+		if infoMun != pMun && infoCityZh != "" {
+			return true
+		}
+	}
+	// Keep ip-api's existing Chinese city when ipinfo only has an untranslated ASCII sub-district.
+	return containsCJK(translateEnCityName(info.Country, info.City))
+}
+
+func (s *IpLocationService) lookupBilibiliLocation(ctx context.Context, ip string, primary *ipApiResponse) string {
+	data, err := s.fetchBilibili(ctx, ip)
+	if err != nil {
+		return ""
+	}
+	return formatBilibiliLocation(data, primary)
+}
+
+func (s *IpLocationService) doGet(ctx context.Context, endpoint string) (int, http.Header, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	resp, err := s.client().Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, ipApiMaxResponseBytes))
+	if readErr != nil {
+		return resp.StatusCode, resp.Header, nil, readErr
+	}
+	return resp.StatusCode, resp.Header, body, nil
 }
 
 func (s *IpLocationService) fetchSingle(ip string) (ipApiResponse, bool, error) {
@@ -260,29 +510,15 @@ func (s *IpLocationService) fetchSingle(ip string) (ipApiResponse, bool, error) 
 		url.PathEscape(ip),
 		url.QueryEscape(ipApiFieldsParam),
 	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	status, headers, body, err := s.doGet(ctx, endpoint)
 	if err != nil {
 		return ipApiResponse{}, false, err
 	}
-
-	resp, err := s.client().Do(req)
-	if err != nil {
-		return ipApiResponse{}, false, err
+	if s.handleIpApiRateLimit(status, headers) && status == http.StatusTooManyRequests {
+		return ipApiResponse{}, true, fmt.Errorf("rate limited (HTTP 429)")
 	}
-	defer resp.Body.Close()
-
-	if s.handleRateLimitHeaders(resp) || resp.StatusCode == http.StatusTooManyRequests {
-		if resp.StatusCode == http.StatusTooManyRequests {
-			return ipApiResponse{}, true, fmt.Errorf("rate limited (HTTP 429)")
-		}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ipApiResponse{}, false, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, ipApiMaxResponseBytes))
-	if err != nil {
-		return ipApiResponse{}, false, err
+	if status < 200 || status >= 300 {
+		return ipApiResponse{}, false, fmt.Errorf("unexpected HTTP status %d", status)
 	}
 	var parsed ipApiResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -291,7 +527,7 @@ func (s *IpLocationService) fetchSingle(ip string) (ipApiResponse, bool, error) 
 	return parsed, false, nil
 }
 
-func (s *IpLocationService) fetchBatch(chunk []string) (map[string]string, bool, error) {
+func (s *IpLocationService) fetchBatchRaw(chunk []string) (map[string]ipApiResponse, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ipLocationRequestTimeout)
 	defer cancel()
 
@@ -317,7 +553,7 @@ func (s *IpLocationService) fetchBatch(chunk []string) (map[string]string, bool,
 	}
 	defer resp.Body.Close()
 
-	if s.handleRateLimitHeaders(resp) && resp.StatusCode == http.StatusTooManyRequests {
+	if s.handleIpApiRateLimit(resp.StatusCode, resp.Header) && resp.StatusCode == http.StatusTooManyRequests {
 		return nil, true, fmt.Errorf("rate limited (HTTP 429)")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -333,10 +569,9 @@ func (s *IpLocationService) fetchBatch(chunk []string) (map[string]string, bool,
 		return nil, false, err
 	}
 
-	resolved := make(map[string]string, len(items))
+	resolved := make(map[string]ipApiResponse, len(items))
 	for i, item := range items {
-		loc := FormatIpLocation(item)
-		if loc == "" {
+		if item.Status != "" && item.Status != "success" {
 			continue
 		}
 		key := ""
@@ -349,31 +584,112 @@ func (s *IpLocationService) fetchBatch(chunk []string) (map[string]string, bool,
 			key = chunk[i]
 		}
 		if key != "" {
-			resolved[key] = loc
+			resolved[key] = item
 		}
 	}
 	return resolved, false, nil
 }
 
-func (s *IpLocationService) handleRateLimitHeaders(resp *http.Response) bool {
-	remaining := strings.TrimSpace(resp.Header.Get("X-Rl"))
-	if resp.StatusCode != http.StatusTooManyRequests && remaining != "0" {
+func (s *IpLocationService) fetchBilibili(ctx context.Context, ip string) (bilibiliIpData, error) {
+	base := s.bilibiliURL()
+	if base == "" {
+		return bilibiliIpData{}, fmt.Errorf("bilibili source disabled")
+	}
+	s.mu.RLock()
+	inCooldown := s.now().Before(s.bilibiliCooldown)
+	s.mu.RUnlock()
+	if inCooldown {
+		return bilibiliIpData{}, fmt.Errorf("bilibili rate limit cooldown")
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, ipLocationCalibrateSubLimit)
+	defer cancel()
+
+	endpoint := fmt.Sprintf("%s/ip_service/v1/ip_service/get_ip_addr?ip=%s", base, url.QueryEscape(ip))
+	status, _, body, err := s.doGet(reqCtx, endpoint)
+	if err != nil {
+		return bilibiliIpData{}, err
+	}
+	if status == http.StatusTooManyRequests || status == http.StatusForbidden || status == http.StatusPreconditionFailed {
+		s.extendCooldown(&s.bilibiliCooldown, bilibiliRateLimitDefault)
+		return bilibiliIpData{}, fmt.Errorf("bilibili rate limited (HTTP %d)", status)
+	}
+	if status < 200 || status >= 300 {
+		return bilibiliIpData{}, fmt.Errorf("bilibili HTTP %d", status)
+	}
+
+	var parsed bilibiliIpResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return bilibiliIpData{}, err
+	}
+	if parsed.Code == -412 || parsed.Code == -509 || parsed.Code == -429 {
+		s.extendCooldown(&s.bilibiliCooldown, bilibiliRateLimitDefault)
+		return bilibiliIpData{}, fmt.Errorf("bilibili code %d", parsed.Code)
+	}
+	if parsed.Code != 0 {
+		return bilibiliIpData{}, fmt.Errorf("bilibili API error code %d", parsed.Code)
+	}
+	return parsed.Data, nil
+}
+
+func (s *IpLocationService) fetchIpInfo(ctx context.Context, ip string) (ipInfoResponse, error) {
+	base := s.ipinfoURL()
+	if base == "" {
+		return ipInfoResponse{}, fmt.Errorf("ipinfo source disabled")
+	}
+	s.mu.RLock()
+	inCooldown := s.now().Before(s.ipinfoCooldown)
+	s.mu.RUnlock()
+	if inCooldown {
+		return ipInfoResponse{}, fmt.Errorf("ipinfo rate limit cooldown")
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, ipLocationCalibrateSubLimit)
+	defer cancel()
+
+	endpoint := fmt.Sprintf("%s/%s/json", base, url.PathEscape(ip))
+	status, _, body, err := s.doGet(reqCtx, endpoint)
+	if err != nil {
+		return ipInfoResponse{}, err
+	}
+	if status == http.StatusTooManyRequests {
+		s.extendCooldown(&s.ipinfoCooldown, ipLocationRateLimitDefault)
+		return ipInfoResponse{}, fmt.Errorf("ipinfo rate limited (HTTP 429)")
+	}
+	if status < 200 || status >= 300 {
+		return ipInfoResponse{}, fmt.Errorf("ipinfo HTTP %d", status)
+	}
+
+	var parsed ipInfoResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ipInfoResponse{}, err
+	}
+	return parsed, nil
+}
+
+func (s *IpLocationService) extendCooldown(target *time.Time, ttl time.Duration) {
+	s.mu.Lock()
+	until := s.now().Add(ttl)
+	if until.After(*target) {
+		*target = until
+	}
+	s.mu.Unlock()
+}
+
+func (s *IpLocationService) handleIpApiRateLimit(statusCode int, headers http.Header) bool {
+	remaining := strings.TrimSpace(headers.Get("X-Rl"))
+	if statusCode != http.StatusTooManyRequests && remaining != "0" {
 		return false
 	}
 
 	ttl := ipLocationRateLimitDefault
-	if rawTTL := strings.TrimSpace(resp.Header.Get("X-Ttl")); rawTTL != "" {
+	if rawTTL := strings.TrimSpace(headers.Get("X-Ttl")); rawTTL != "" {
 		if secs, err := strconv.Atoi(rawTTL); err == nil && secs > 0 {
 			ttl = time.Duration(secs) * time.Second
 		}
 	}
 
-	s.mu.Lock()
-	until := s.now().Add(ttl)
-	if until.After(s.cooldownUntil) {
-		s.cooldownUntil = until
-	}
-	s.mu.Unlock()
+	s.extendCooldown(&s.cooldownUntil, ttl)
 	return true
 }
 
@@ -636,11 +952,13 @@ func formatIspName(res ipApiResponse) string {
 		return "联通"
 	case broadnetASNs[asNum] || containsAny(combined, "china broadcasting", "topway", "gehua", "oriental cable", "中国广电", "天威", "歌华"):
 		return "广电"
-	case eduNetASNs[asNum] || containsAny(combined, "cernet", "education and research"):
+	case eduNetASNs[asNum] || containsAny(combined, "cernet", "education and research", "教育网"):
 		return "教育网"
-	case techNetASNs[asNum] || containsAny(combined, "cstnet"):
+	case techNetASNs[asNum] || containsAny(combined, "cstnet", "科技网"):
 		return "科技网"
-	case drPengASNs[asNum] || containsAny(combined, "dr.peng", "drpeng", "gwbn", "great wall broadband"):
+	case containsAny(combined, "tietong", "railcom", "铁通"):
+		return "铁通"
+	case drPengASNs[asNum] || containsAny(combined, "dr.peng", "drpeng", "gwbn", "great wall broadband", "长城", "长宽", "鹏博士"):
 		return "长宽"
 	}
 
@@ -668,7 +986,7 @@ func formatIspName(res ipApiResponse) string {
 		return "字节"
 	case containsAny(combined, "baidu") || asNum == "AS55967":
 		return "百度"
-	case containsAny(combined, "chunghwa", "hinet") || asNum == "AS3462":
+	case containsAny(combined, "chunghwa", "hinet", "cht.com.tw") || asNum == "AS3462":
 		return "中华电信"
 	case containsAny(combined, "taiwan mobile") || asNum == "AS24158":
 		return "台湾大哥大"
@@ -786,4 +1104,213 @@ func containsCJK(s string) bool {
 		}
 	}
 	return false
+}
+
+var cnIPv6Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("2408::/20"),
+	netip.MustParsePrefix("2409:8000::/20"),
+	netip.MustParsePrefix("240e::/20"),
+}
+
+func looksLikeCNIP(canonical string) bool {
+	addr, err := netip.ParseAddr(canonical)
+	if err != nil {
+		return false
+	}
+	for _, prefix := range cnIPv6Prefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPlaceholderLocation(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" || trimmed == "*" || trimmed == "-" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	return containsAny(lower, "保留", "内网", "局域网", "未知", "iana", "private", "reserved")
+}
+
+func formatBilibiliLocation(data bilibiliIpData, fallbackRes *ipApiResponse) string {
+	country := strings.TrimSpace(data.Country)
+	if country != "中国" {
+		return ""
+	}
+	prov := strings.TrimSpace(data.Province)
+	city := strings.TrimSpace(data.City)
+
+	locCity := ""
+	switch {
+	case strings.HasPrefix(prov, "香港"):
+		locCity = "香港"
+	case strings.HasPrefix(prov, "澳门"), strings.HasPrefix(prov, "澳門"):
+		locCity = "澳门"
+	case prov == "台湾" || prov == "台灣":
+		if !isPlaceholderLocation(city) {
+			locCity = trimChineseCitySuffix(city, true)
+		} else {
+			locCity = "台湾"
+		}
+	default:
+		if mun := chineseMunicipalityName(prov); mun != "" {
+			locCity = mun
+		} else if !isPlaceholderLocation(city) {
+			locCity = trimChineseCitySuffix(city, false)
+		} else if !isPlaceholderLocation(prov) {
+			provShort := trimChineseRegionSuffix(prov)
+			if fallbackRes != nil &&
+				trimChineseRegionSuffix(strings.TrimSpace(fallbackRes.RegionName)) == provShort &&
+				strings.TrimSpace(fallbackRes.City) != "" {
+				locCity = trimChineseCitySuffix(strings.TrimSpace(fallbackRes.City), false)
+			} else {
+				locCity = provShort
+			}
+		}
+	}
+	if locCity == "" {
+		return ""
+	}
+	isp := normalizeBilibiliIsp(data.ISP, fallbackRes)
+	return combineCityAndIsp(locCity, isp)
+}
+
+func normalizeBilibiliIsp(raw string, fallbackRes *ipApiResponse) string {
+	isp := strings.TrimSpace(raw)
+	if isPlaceholderLocation(isp) || strings.EqualFold(isp, "bgp") || isp == "多线" {
+		isp = ""
+	}
+	if isp != "" {
+		lower := strings.ToLower(isp)
+		// Match cloud vendors before generic carrier tokens because Bilibili
+		// multi-line BGP strings look like "阿里云/电信/联通/移动/教育网".
+		switch {
+		case containsAny(lower, "阿里云", "alibaba", "aliyun"):
+			return "阿里云"
+		case containsAny(lower, "腾讯云", "腾讯", "tencent"):
+			return "腾讯云"
+		case containsAny(lower, "华为云", "华为", "huawei"):
+			return "华为云"
+		case containsAny(lower, "火山", "字节", "bytedance"):
+			return "字节"
+		case containsAny(lower, "百度云", "百度", "baidu"):
+			return "百度"
+		case containsAny(lower, "京东云"):
+			return "京东云"
+		case containsAny(lower, "金山云"):
+			return "金山云"
+		case containsAny(lower, "天翼云"):
+			return "天翼云"
+		case containsAny(lower, "移动云"):
+			return "移动云"
+		case containsAny(lower, "联通云"):
+			return "联通云"
+		case containsAny(lower, "ucloud", "优刻得"):
+			return "UCloud"
+		}
+		if mapped := formatIspName(ipApiResponse{CountryCode: "CN", ISP: isp}); mapped != "" {
+			return mapped
+		}
+	}
+	if fallbackRes != nil {
+		return formatIspName(*fallbackRes)
+	}
+	return ""
+}
+
+// FormatIpInfoLocation converts an ipinfo.io JSON payload into a concise "city + ISP" label.
+func FormatIpInfoLocation(res ipInfoResponse) string {
+	cc := strings.ToUpper(strings.TrimSpace(res.Country))
+	city := translateEnCityName(cc, res.City)
+	mapped := ipApiResponse{
+		Status:      "success",
+		CountryCode: cc,
+		RegionName:  res.Region,
+		City:        city,
+		Org:         res.Org,
+		AS:          res.Org,
+		Query:       res.IP,
+	}
+	return FormatIpLocation(mapped)
+}
+
+var enCityToZhByCC = map[string]map[string]string{
+	"CN": {
+		"beijing":     "北京",
+		"shanghai":    "上海",
+		"tianjin":     "天津",
+		"chongqing":   "重庆",
+		"guangzhou":   "广州",
+		"shenzhen":    "深圳",
+		"dongguan":    "东莞",
+		"foshan":      "佛山",
+		"zhuhai":      "珠海",
+		"huizhou":     "惠州",
+		"zhongshan":   "中山",
+		"nanjing":     "南京",
+		"suzhou":      "苏州",
+		"wuxi":        "无锡",
+		"changzhou":   "常州",
+		"xuzhou":      "徐州",
+		"nantong":     "南通",
+		"hangzhou":    "杭州",
+		"ningbo":      "宁波",
+		"wenzhou":     "温州",
+		"chengdu":     "成都",
+		"wuhan":       "武汉",
+		"xi'an":       "西安",
+		"xian":        "西安",
+		"changsha":    "长沙",
+		"zhengzhou":   "郑州",
+		"jinan":       "济南",
+		"qingdao":     "青岛",
+		"dalian":      "大连",
+		"shenyang":    "沈阳",
+		"harbin":      "哈尔滨",
+		"changchun":   "长春",
+		"kunming":     "昆明",
+		"fuzhou":      "福州",
+		"xiamen":      "厦门",
+		"quanzhou":    "泉州",
+		"hefei":       "合肥",
+		"nanchang":    "南昌",
+		"nanning":     "南宁",
+		"guiyang":     "贵阳",
+		"taiyuan":     "太原",
+		"shijiazhuang": "石家庄",
+		"lanzhou":     "兰州",
+		"haikou":      "海口",
+		"sanya":       "三亚",
+		"urumqi":      "乌鲁木齐",
+		"hohhot":      "呼和浩特",
+		"yinchuan":    "银川",
+		"xining":      "西宁",
+		"lhasa":       "拉萨",
+	},
+	"TW": {
+		"taipei":    "台北",
+		"taichung":  "台中",
+		"kaohsiung": "高雄",
+		"tainan":    "台南",
+	},
+	"JP": {
+		"tokyo": "东京",
+		"osaka": "大阪",
+		"kyoto": "京都",
+	},
+}
+
+func translateEnCityName(cc, city string) string {
+	trimmed := strings.TrimSpace(city)
+	if trimmed == "" {
+		return ""
+	}
+	if byCity, ok := enCityToZhByCC[strings.ToUpper(strings.TrimSpace(cc))]; ok {
+		if zh, found := byCity[strings.ToLower(trimmed)]; found {
+			return zh
+		}
+	}
+	return trimmed
 }

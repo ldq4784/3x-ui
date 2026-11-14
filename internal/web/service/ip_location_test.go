@@ -400,3 +400,371 @@ func TestIpLocationService_LookupLocations_SingleBatchCacheAnd429(t *testing.T) 
 		t.Fatalf("expected cached bracketed/unbracketed IPv6 both to return 深圳移动, got %v", cachedIPv6)
 	}
 }
+
+func TestFormatBilibiliAndIpInfo(t *testing.T) {
+	if got := formatBilibiliLocation(bilibiliIpData{
+		Country:  "中国",
+		Province: "北京",
+		City:     "北京",
+		ISP:      "阿里云/电信/联通/移动/教育网",
+	}, nil); got != "北京阿里云" {
+		t.Fatalf("expected 北京阿里云, got %q", got)
+	}
+
+	if got := formatBilibiliLocation(bilibiliIpData{
+		Country:  "GOOGLE.COM",
+		Province: "GOOGLE.COM",
+		ISP:      "level3.com",
+	}, nil); got != "" {
+		t.Fatalf("expected empty for non-CN bilibili payload, got %q", got)
+	}
+
+	if got := formatBilibiliLocation(bilibiliIpData{
+		Country:  "中国",
+		Province: "广东",
+		City:     "深圳",
+		ISP:      "BGP",
+	}, &ipApiResponse{
+		CountryCode: "CN",
+		AS:          "AS17623 China Unicom Shenzen network",
+	}); got != "深圳联通" {
+		t.Fatalf("expected ASN fallback 深圳联通, got %q", got)
+	}
+
+	tests := []struct {
+		name string
+		res  ipInfoResponse
+		want string
+	}{
+		{
+			name: "Shenzhen Unicom AS17623",
+			res: ipInfoResponse{
+				IP:      "2408:8456:3630:19d2:7818:1d75:b136:b7f2",
+				City:    "Shenzhen",
+				Region:  "Guangdong",
+				Country: "CN",
+				Org:     "AS17623 China Unicom Shenzen network",
+			},
+			want: "深圳联通",
+		},
+		{
+			name: "Hong Kong Google AS396982",
+			res: ipInfoResponse{
+				IP:      "34.92.173.162",
+				City:    "Hong Kong",
+				Region:  "Hong Kong",
+				Country: "HK",
+				Org:     "AS396982 Google LLC",
+			},
+			want: "香港 Google",
+		},
+		{
+			name: "Taipei Chunghwa Telecom",
+			res: ipInfoResponse{
+				IP:      "168.95.1.1",
+				City:    "Taipei",
+				Country: "TW",
+				Org:     "AS3462 Data Communication Business Group",
+			},
+			want: "台北中华电信",
+		},
+		{
+			name: "Tokyo AWS",
+			res: ipInfoResponse{
+				IP:      "54.250.0.1",
+				City:    "Tokyo",
+				Country: "JP",
+				Org:     "AS16509 Amazon.com, Inc.",
+			},
+			want: "东京 AWS",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatIpInfoLocation(tc.res); got != tc.want {
+				t.Fatalf("FormatIpInfoLocation() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIpLocationService_MultiSourceCalibration(t *testing.T) {
+	var biliCalls atomic.Int32
+	var overseasBiliCalls atomic.Int32
+	var infoCalls atomic.Int32
+
+	ipApiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqIPs []string
+		if err := json.NewDecoder(r.Body).Decode(&reqIPs); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		resp := make([]ipApiResponse, 0, len(reqIPs))
+		for _, ip := range reqIPs {
+			switch ip {
+			case "2408:8456:3630:19d2:7818:1d75:b136:b7f2":
+				// Simulate ip-api wrongly falling back to Beijing HQ for Unicom IPv6.
+				resp = append(resp, ipApiResponse{
+					Status:      "success",
+					CountryCode: "CN",
+					RegionName:  "北京市",
+					City:        "金融街",
+					ISP:         "China Unicom Network",
+					AS:          "AS17816 China Unicom",
+					Query:       ip,
+				})
+			case "47.92.1.1":
+				resp = append(resp, ipApiResponse{
+					Status:      "success",
+					CountryCode: "CN",
+					RegionName:  "北京市",
+					City:        "北京市",
+					ISP:         "Alibaba",
+					AS:          "AS37963 Alibaba",
+					Query:       ip,
+				})
+			case "34.92.173.162":
+				resp = append(resp, ipApiResponse{
+					Status:      "success",
+					CountryCode: "HK",
+					City:        "下葵涌",
+					ISP:         "Google LLC",
+					AS:          "AS396982 Google LLC",
+					Query:       ip,
+				})
+			case "8.8.8.8":
+				resp = append(resp, ipApiResponse{
+					Status:      "success",
+					CountryCode: "US",
+					City:        "Ashburn",
+					ISP:         "Google LLC",
+					AS:          "AS15169 Google LLC",
+					Query:       ip,
+				})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ipApiSrv.Close()
+
+	biliSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.URL.Query().Get("ip")
+		biliCalls.Add(1)
+		switch ip {
+		case "2408:8456:3630:19d2:7818:1d75:b136:b7f2":
+			_ = json.NewEncoder(w).Encode(bilibiliIpResponse{
+				Code: 0,
+				Data: bilibiliIpData{
+					Addr:     ip,
+					Country:  "中国",
+					Province: "广东",
+					City:     "深圳",
+					ISP:      "联通",
+				},
+			})
+		case "47.92.1.1":
+			_ = json.NewEncoder(w).Encode(bilibiliIpResponse{
+				Code: 0,
+				Data: bilibiliIpData{
+					Addr:     ip,
+					Country:  "中国",
+					Province: "北京",
+					City:     "北京",
+					ISP:      "阿里云/电信/联通/移动/教育网",
+				},
+			})
+		default:
+			overseasBiliCalls.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer biliSrv.Close()
+
+	infoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		infoCalls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer infoSrv.Close()
+
+	svc := newIpLocationService()
+	svc.apiBaseURL = ipApiSrv.URL
+	svc.bilibiliBaseURL = biliSrv.URL
+	svc.ipinfoBaseURL = infoSrv.URL
+	svc.httpClient = ipApiSrv.Client()
+
+	got := svc.LookupLocations([]string{
+		"[2408:8456:3630:19d2:7818:1d75:b136:b7f2]",
+		"47.92.1.1",
+		"34.92.173.162",
+		"8.8.8.8",
+	})
+
+	if got["[2408:8456:3630:19d2:7818:1d75:b136:b7f2]"] != "深圳联通" {
+		t.Fatalf("expected CN IPv6 calibrated to 深圳联通, got %q", got["[2408:8456:3630:19d2:7818:1d75:b136:b7f2]"])
+	}
+	if got["47.92.1.1"] != "北京阿里云" {
+		t.Fatalf("expected 47.92.1.1 calibrated to 北京阿里云, got %q", got["47.92.1.1"])
+	}
+	if got["34.92.173.162"] != "香港 Google" {
+		t.Fatalf("expected HK IP to keep ip-api label 香港 Google, got %q", got["34.92.173.162"])
+	}
+	if got["8.8.8.8"] != "Ashburn Google" {
+		t.Fatalf("expected US IP to keep ip-api label Ashburn Google, got %q", got["8.8.8.8"])
+	}
+	if biliCalls.Load() != 2 || overseasBiliCalls.Load() != 0 || infoCalls.Load() != 0 {
+		t.Fatalf("unexpected secondary calls: bili=%d overseasBili=%d info=%d", biliCalls.Load(), overseasBiliCalls.Load(), infoCalls.Load())
+	}
+}
+
+func TestIpLocationService_BilibiliFallbackToIpInfo(t *testing.T) {
+	var biliCalls atomic.Int32
+
+	ipApiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqIPs []string
+		_ = json.NewDecoder(r.Body).Decode(&reqIPs)
+		resp := make([]ipApiResponse, 0, len(reqIPs))
+		for _, ip := range reqIPs {
+			switch ip {
+			case "2408:8456:3630:19d2:7818:1d75:b136:b7f2":
+				resp = append(resp, ipApiResponse{
+					Status:      "success",
+					CountryCode: "CN",
+					RegionName:  "北京市",
+					City:        "金融街",
+					AS:          "AS17816 China Unicom",
+					Query:       ip,
+				})
+			case "221.6.10.213":
+				resp = append(resp, ipApiResponse{
+					Status:      "success",
+					CountryCode: "CN",
+					RegionName:  "江苏",
+					City:        "苏州市",
+					AS:          "AS4837 CHINA UNICOM",
+					Query:       ip,
+				})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ipApiSrv.Close()
+
+	biliSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		biliCalls.Add(1)
+		// Trigger bilibili cooldown (HTTP 412).
+		w.WriteHeader(http.StatusPreconditionFailed)
+	}))
+	defer biliSrv.Close()
+
+	infoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/2408:8456:3630:19d2:7818:1d75:b136:b7f2/json":
+			_ = json.NewEncoder(w).Encode(ipInfoResponse{
+				IP:      "2408:8456:3630:19d2:7818:1d75:b136:b7f2",
+				City:    "Shenzhen",
+				Region:  "Guangdong",
+				Country: "CN",
+				Org:     "AS17623 China Unicom Shenzen network",
+			})
+		case "/221.6.10.213/json":
+			_ = json.NewEncoder(w).Encode(ipInfoResponse{
+				IP:      "221.6.10.213",
+				City:    "Xiaolingwei",
+				Region:  "Jiangsu",
+				Country: "CN",
+				Org:     "AS4837 CHINA UNICOM China169 Backbone",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer infoSrv.Close()
+
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	svc := newIpLocationService()
+	svc.apiBaseURL = ipApiSrv.URL
+	svc.bilibiliBaseURL = biliSrv.URL
+	svc.ipinfoBaseURL = infoSrv.URL
+	svc.httpClient = ipApiSrv.Client()
+	svc.nowFn = func() time.Time { return now }
+
+	got := svc.LookupLocations([]string{
+		"2408:8456:3630:19d2:7818:1d75:b136:b7f2",
+		"221.6.10.213",
+	})
+	if got["2408:8456:3630:19d2:7818:1d75:b136:b7f2"] != "深圳联通" {
+		t.Fatalf("expected ipinfo fallback 深圳联通 when ip-api wrongly gave 北京, got %q", got["2408:8456:3630:19d2:7818:1d75:b136:b7f2"])
+	}
+	if got["221.6.10.213"] != "苏州联通" {
+		t.Fatalf("expected ip-api Chinese city 苏州联通 preserved over untranslated Xiaolingwei, got %q", got["221.6.10.213"])
+	}
+
+	// While bilibili cooldown is active, another lookup must skip bilibili HTTP calls.
+	prevBiliCalls := biliCalls.Load()
+	_ = svc.LookupLocations([]string{"112.97.48.115"})
+	if biliCalls.Load() != prevBiliCalls {
+		t.Fatalf("expected bilibili cooldown to skip HTTP calls, before=%d after=%d", prevBiliCalls, biliCalls.Load())
+	}
+}
+
+func TestIpLocationService_PrimaryDownFallback(t *testing.T) {
+	ipApiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Ttl", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ipApiSrv.Close()
+
+	biliSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.URL.Query().Get("ip")
+		_ = json.NewEncoder(w).Encode(bilibiliIpResponse{
+			Code: 0,
+			Data: bilibiliIpData{
+				Addr:     ip,
+				Country:  "中国",
+				Province: "广东",
+				City:     "深圳",
+				ISP:      "电信",
+			},
+		})
+	}))
+	defer biliSrv.Close()
+
+	infoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/8.8.8.8/json":
+			_ = json.NewEncoder(w).Encode(ipInfoResponse{
+				IP:      "8.8.8.8",
+				City:    "Mountain View",
+				Region:  "California",
+				Country: "US",
+				Org:     "AS15169 Google LLC",
+			})
+		case "/183.17.125.159/json":
+			_ = json.NewEncoder(w).Encode(ipInfoResponse{
+				IP:      "183.17.125.159",
+				City:    "Shenzhen",
+				Region:  "Guangdong",
+				Country: "CN",
+				Org:     "AS4134 CHINANET-BACKBONE",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer infoSrv.Close()
+
+	svc := newIpLocationService()
+	svc.apiBaseURL = ipApiSrv.URL
+	svc.bilibiliBaseURL = biliSrv.URL
+	svc.ipinfoBaseURL = infoSrv.URL
+	svc.httpClient = ipApiSrv.Client()
+
+	got := svc.LookupLocations([]string{"8.8.8.8", "183.17.125.159"})
+	if got["8.8.8.8"] != "Mountain View Google" {
+		t.Fatalf("expected ipinfo fallback Mountain View Google, got %q", got["8.8.8.8"])
+	}
+	if got["183.17.125.159"] != "深圳电信" {
+		t.Fatalf("expected CN fallback 深圳电信 via ipinfo+bilibili, got %q", got["183.17.125.159"])
+	}
+}
