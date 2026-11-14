@@ -436,18 +436,19 @@ func normalizeQueryIP(raw string) (canonical string, isPublic bool, privateLabel
 	if trimmed == "" {
 		return "", false, ""
 	}
+	if host, _, splitErr := net.SplitHostPort(trimmed); splitErr == nil {
+		trimmed = strings.TrimSpace(host)
+	}
+	// Xray access logs store bracketed IPv6 without port (e.g. "[2409:...]");
+	// strip outer brackets so netip.ParseAddr can parse them.
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	}
 	addr, err := netip.ParseAddr(trimmed)
 	if err != nil {
-		host, _, splitErr := net.SplitHostPort(trimmed)
-		if splitErr != nil {
-			return "", false, ""
-		}
-		addr, err = netip.ParseAddr(strings.TrimSpace(host))
-		if err != nil {
-			return "", false, ""
-		}
+		return "", false, ""
 	}
-	addr = addr.Unmap()
+	addr = addr.Unmap().WithZone("")
 	if addr.IsLoopback() {
 		return addr.String(), false, "本地"
 	}

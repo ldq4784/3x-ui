@@ -42,7 +42,7 @@ export default function ClientIpLogModal({
           {locationsLoading ? <Spin size="small" /> : null}
         </span>
       }
-      width={580}
+      width={660}
       zIndex={zIndex}
       onCancel={onClose}
       footer={[

@@ -167,11 +167,17 @@ func TestNormalizeQueryIP(t *testing.T) {
 	}{
 		{"127.0.0.1", "127.0.0.1", false, "本地"},
 		{"::1", "::1", false, "本地"},
+		{"[::1]", "::1", false, "本地"},
 		{"10.0.0.1", "10.0.0.1", false, "内网"},
 		{"192.168.1.5", "192.168.1.5", false, "内网"},
 		{"100.64.0.1", "100.64.0.1", false, "内网"},
+		{"[fe80::1%eth0]", "fe80::1", false, "内网"},
 		{"::ffff:221.6.10.213", "221.6.10.213", true, ""},
+		{"[::ffff:221.6.10.213]", "221.6.10.213", true, ""},
 		{"221.6.10.213:12345", "221.6.10.213", true, ""},
+		{"2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d", "2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d", true, ""},
+		{"[2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d]", "2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d", true, ""},
+		{"[2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d]:54321", "2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d", true, ""},
 		{"not-an-ip", "", false, ""},
 		{"", "", false, ""},
 	}
@@ -210,6 +216,19 @@ func TestIpLocationService_LookupLocations_SingleBatchCacheAnd429(t *testing.T) 
 				ISP:         "CNC Group CHINA169 Jiangsu Province Network",
 				AS:          "AS4837 CHINA UNICOM China169 Backbone",
 				Query:       "221.6.10.213",
+			})
+		case "/json/2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d":
+			singleCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(ipApiResponse{
+				Status:      "success",
+				Country:     "中国",
+				CountryCode: "CN",
+				RegionName:  "广东",
+				City:        "深圳",
+				ISP:         "China Mobile Communications Group Co., Ltd",
+				Org:         "China Mobile Communications Group Co., Ltd",
+				AS:          "AS56040 China Mobile communications corporation",
+				Query:       "2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d",
 			})
 		case "/batch":
 			batchCalls.Add(1)
@@ -314,5 +333,18 @@ func TestIpLocationService_LookupLocations_SingleBatchCacheAnd429(t *testing.T) 
 	}
 	if batchCalls.Load() != 2 {
 		t.Fatalf("expected batchCalls=2 after cooldown recovery, got %d", batchCalls.Load())
+	}
+
+	// Bracketed IPv6 from Xray logs queries unbracketed canonical IPv6 and maps back to bracketed key.
+	gotIPv6 := svc.LookupLocations([]string{"[2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d]"})
+	if gotIPv6["[2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d]"] != "深圳移动" {
+		t.Fatalf("expected bracketed IPv6 lookup to return 深圳移动, got %v", gotIPv6)
+	}
+	if singleCalls.Load() != 2 {
+		t.Fatalf("expected singleCalls=2 after bracketed IPv6 lookup, got %d", singleCalls.Load())
+	}
+	cachedIPv6 := svc.GetCachedLocations([]string{"[2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d]", "2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d"})
+	if cachedIPv6["[2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d]"] != "深圳移动" || cachedIPv6["2409:8a55:32e2:e600:ad8d:9a81:9093:1c6d"] != "深圳移动" {
+		t.Fatalf("expected cached bracketed/unbracketed IPv6 both to return 深圳移动, got %v", cachedIPv6)
 	}
 }
